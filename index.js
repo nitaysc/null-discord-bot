@@ -49,7 +49,7 @@ try {
     console.warn('⚠️ FFmpeg check notice:', err.message);
 }
 
-// Optional YouTube Cookie support (bypasses 429 on YouTube if provided)
+// Optional YouTube Cookie support
 if (process.env.YOUTUBE_COOKIE) {
     try {
         play.setToken({ youtube: { cookie: process.env.YOUTUBE_COOKIE } });
@@ -97,8 +97,9 @@ function findCleanTrack(tracks, query) {
 
 // High-Performance, 429-Immune Music Extractor:
 // - Always streams the REAL song (filters out random remixes and bootlegs)
-// - Handles YouTube 429 data-center IP blocks without crashing
-// - Uses only ~80MB RAM
+// - Uses public permalinks to avoid 404 API restrictions
+// - Handles YouTube 429 data-center IP blocks gracefully
+// - Memory optimized (~80MB RAM)
 class ResilientMusicExtractor extends BaseExtractor {
     static identifier = 'com.null.resilient-music-extractor';
 
@@ -117,24 +118,24 @@ class ResilientMusicExtractor extends BaseExtractor {
                 const spData = await play.spotify(query);
                 const searchQ = `${spData.name} ${spData.artists?.[0]?.name || ''}`;
                 
-                // Search clean track
                 const scResults = await play.search(searchQ, { source: { soundcloud: 'tracks' }, limit: 5 });
                 const clean = findCleanTrack(scResults, searchQ);
 
                 const track = new Track(this.player, {
                     title: spData.name,
                     author: spData.artists?.map(a => a.name).join(', ') || 'Spotify',
-                    url: clean?.url || query,
+                    url: clean?.permalink || clean?.url || query,
                     thumbnail: spData.thumbnail?.url || clean?.thumbnail || '',
                     duration: spData.durationInSec ? `${Math.floor(spData.durationInSec / 60)}:${(spData.durationInSec % 60).toString().padStart(2, '0')}` : '3:00',
                     requestedBy: context.requestedBy,
                     source: 'soundcloud'
                 });
+                track.raw = clean;
                 track.extractor = this;
                 return this.createResponse(null, [track]);
             }
 
-            // 2. Direct YouTube Video URL
+            // 2. Direct YouTube Video URL (if cookie is configured)
             const ytValidation = play.yt_validate(query);
             if (ytValidation === 'video' && process.env.YOUTUBE_COOKIE) {
                 try {
@@ -152,11 +153,11 @@ class ResilientMusicExtractor extends BaseExtractor {
                     track.extractor = this;
                     return this.createResponse(null, [track]);
                 } catch (e) {
-                    console.warn('YouTube cookie video load error, falling back to clean stream:', e.message);
+                    console.warn('YouTube cookie video load error, using clean stream:', e.message);
                 }
             }
 
-            // 3. YouTube Playlist (with cookie)
+            // 3. YouTube Playlist (if cookie is configured)
             if (ytValidation === 'playlist' && process.env.YOUTUBE_COOKIE) {
                 try {
                     const pl = await play.playlist_info(query, { incomplete: true });
@@ -186,12 +187,13 @@ class ResilientMusicExtractor extends BaseExtractor {
                 const track = new Track(this.player, {
                     title: clean.name || clean.title || query,
                     author: clean.user?.name || 'Artist',
-                    url: clean.url,
+                    url: clean.permalink || clean.url, // Uses web permalink to prevent 404
                     thumbnail: clean.thumbnail || '',
                     duration: clean.durationRaw || '3:00',
                     requestedBy: context.requestedBy,
                     source: 'soundcloud'
                 });
+                track.raw = clean;
                 track.extractor = this;
                 return this.createResponse(null, [track]);
             }
@@ -212,29 +214,35 @@ class ResilientMusicExtractor extends BaseExtractor {
                 const source = await play.stream(info.url);
                 return source.stream;
             } catch (err) {
-                console.warn(`⚠️ YouTube stream unavailable (${err.message}). Seamlessly switching to clean fallback stream...`);
+                console.warn(`⚠️ YouTube stream notice (${err.message}). Falling back to clean audio stream...`);
             }
         }
 
-        // 2. Stream audio (100% reliable, no 429)
-        try {
-            if (info.url && info.url.includes('soundcloud.com')) {
-                const source = await play.stream(info.url);
+        // 2. Stream audio using web permalink (avoids API 404s)
+        const targetUrl = info.raw?.permalink || (info.url && !info.url.includes('api.soundcloud.com') ? info.url : null);
+        if (targetUrl) {
+            try {
+                const source = await play.stream(targetUrl);
                 return source.stream;
+            } catch (e) {
+                console.warn('Direct stream notice:', e.message);
             }
+        }
 
-            // If URL was not direct soundcloud, search and stream clean track
+        // Fallback search
+        try {
             const scResults = await play.search(`${info.title} ${info.author}`, { source: { soundcloud: 'tracks' }, limit: 5 });
             const clean = findCleanTrack(scResults, info.title);
-            if (clean) {
-                const source = await play.stream(clean.url);
+            const fallbackUrl = clean?.permalink || clean?.url;
+            if (fallbackUrl) {
+                const source = await play.stream(fallbackUrl);
                 return source.stream;
             }
-        } catch (streamErr) {
-            console.error('[Stream Generation Error]:', streamErr.message);
+        } catch (fallbackErr) {
+            console.error('[Fallback Stream Error]:', fallbackErr.message);
         }
 
-        throw new Error(`Unable to extract audio stream for ${info.title}`);
+        throw new Error(`Could not find an available stream for "${info.title}"`);
     }
 }
 
@@ -472,8 +480,12 @@ const slashCommands = [
         .setDescription('Show all commands and usage instructions')
 ];
 
-// Bot Ready Event
+// Bot Ready Event (Protected against duplicate triggering)
+let readyTriggered = false;
 const onReady = async () => {
+    if (readyTriggered) return;
+    readyTriggered = true;
+
     console.log('======================================================');
     console.log(`✅ [ONLINE] Logged in as: ${client.user.tag}`);
     console.log(`🆔 Bot ID: ${client.user.id}`);
