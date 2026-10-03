@@ -238,17 +238,19 @@ function cleanAIResponse(text) {
     if (!text) return '';
     let cleaned = text;
 
-    // Remove XML thinking tags
+    // Remove XML thinking and reasoning tags
     cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/gi, '');
     cleaned = cleaned.replace(/<thought>[\s\S]*?<\/thought>/gi, '');
+    cleaned = cleaned.replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, '');
 
-    // Strip raw reasoning monologue if the model started talking to itself
-    if (/^User:\s*".*?"\s*They want/i.test(cleaned) || /^The user (asks|wants|is asking)/i.test(cleaned)) {
-        const parts = cleaned.split(/\n\n+/);
-        if (parts.length > 1) {
-            const lastPart = parts[parts.length - 1].trim();
-            if (!/^User:|^The user/i.test(lastPart)) {
-                cleaned = lastPart;
+    // Strip monologue patterns where the model repeats the prompt and reasons about it
+    if (/^(User:\s*".*?"|The user (asks|wants|is asking|requested)|Let's (see|analyze|think)|Thinking Process:|Reasoning:)/i.test(cleaned.trim())) {
+        const parts = cleaned.split(/\n\s*\n+/);
+        for (let i = parts.length - 1; i >= 0; i--) {
+            const p = parts[i].trim();
+            if (!/^(User:\s*"|The user |They want |Let's |First,|Perhaps |We need to |Probably |In conclusion)/i.test(p) && p.length > 5) {
+                cleaned = parts.slice(i).join('\n\n');
+                break;
             }
         }
     }
@@ -516,90 +518,225 @@ async function callOpenRouter(openrouterKey, systemInstructionText, history, pro
     throw new Error('OpenRouter returned empty choices');
 }
 
-// 3. Google Gemini Engine (1,500 req/day + Native Google Search Grounding)
-async function callGemini(geminiKey, systemInstructionText, history, prompt) {
+// ==========================================
+// 📸 MULTIMODAL GEMINI VISION ENGINE
+// (Images, GIFs, Attachments & Visual Replies)
+// ==========================================
+
+// Extract all direct images, GIF embeds, and media attachments from a Discord message
+function extractImagesFromMessage(msg) {
+    if (!msg) return [];
+    const images = [];
+
+    // 1. Direct Discord message attachments (png, jpg, gif, webp, etc.)
+    if (msg.attachments && msg.attachments.size > 0) {
+        for (const [_, att] of msg.attachments) {
+            const isImg = att.contentType?.startsWith('image/') ||
+                /\.(png|jpe?g|gif|webp|bmp|tiff)$/i.test(att.name || att.url);
+            if (isImg && att.url) {
+                images.push(att.url);
+            }
+        }
+    }
+
+    // 2. Embeds (Tenor GIFs, Giphy, direct image embeds)
+    if (msg.embeds && msg.embeds.length > 0) {
+        for (const emb of msg.embeds) {
+            const imgUrl = emb.image?.url || emb.thumbnail?.url;
+            if (imgUrl && !images.includes(imgUrl)) {
+                images.push(imgUrl);
+            }
+        }
+    }
+
+    // 3. URLs in message content
+    if (msg.content) {
+        const urlRegex = /(https?:\/\/[^\s<>]+\.(?:png|jpe?g|gif|webp)(?:\?[^\s<>]*)?)/gi;
+        let match;
+        while ((match = urlRegex.exec(msg.content)) !== null) {
+            if (!images.includes(match[1])) {
+                images.push(match[1]);
+            }
+        }
+    }
+
+    return images;
+}
+
+// Download image or GIF and convert to base64 inlineData for Gemini Vision
+async function fetchImagePart(url) {
+    try {
+        const res = await fetch(url, { signal: AbortSignal.timeout(12000) });
+        if (!res.ok) return null;
+
+        const contentLength = res.headers.get('content-length');
+        if (contentLength && parseInt(contentLength, 10) > 8 * 1024 * 1024) {
+            console.warn(`[Gemini Vision] Image skipped (exceeds 8MB limit): ${url}`);
+            return null;
+        }
+
+        let mimeType = res.headers.get('content-type')?.split(';')[0]?.trim()?.toLowerCase() || 'image/jpeg';
+        if (!mimeType.startsWith('image/')) {
+            if (/\.png(\?|$)/i.test(url)) mimeType = 'image/png';
+            else if (/\.gif(\?|$)/i.test(url)) mimeType = 'image/gif';
+            else if (/\.webp(\?|$)/i.test(url)) mimeType = 'image/webp';
+            else mimeType = 'image/jpeg';
+        }
+
+        const arrayBuffer = await res.arrayBuffer();
+        const base64Data = Buffer.from(arrayBuffer).toString('base64');
+        return {
+            inlineData: {
+                mimeType: mimeType,
+                data: base64Data
+            }
+        };
+    } catch (e) {
+        console.warn(`[Gemini Vision] Failed to download image ${url}:`, e.message);
+        return null;
+    }
+}
+
+// 3. Google Gemini Vision Engine (Multimodal for Images, GIFs, Screenshots & Memes)
+async function callGeminiVision(geminiKey, systemInstructionText, history, prompt, imageUrls) {
     const contents = [];
-    const promptHistory = (history || []).slice(-12);
+    const promptHistory = (history || []).slice(-6);
     for (const h of promptHistory) {
         contents.push({
             role: h.role === 'model' ? 'model' : 'user',
             parts: [{ text: h.role === 'user' ? `[${h.name}]: ${String(h.text || '').slice(0, 500)}` : String(h.text || '').slice(0, 500) }]
         });
     }
+
+    // Download up to 3 images/GIFs concurrently
+    const imageParts = [];
+    for (const imgUrl of imageUrls.slice(0, 3)) {
+        const part = await fetchImagePart(imgUrl);
+        if (part) imageParts.push(part);
+    }
+
+    if (imageParts.length === 0) {
+        throw new Error('לא הצלחתי להוריד את התמונה/גיף לצורך ניתוח.');
+    }
+
+    const userParts = [
+        ...imageParts,
+        { text: String(prompt).slice(0, 1500) }
+    ];
+
     contents.push({
         role: 'user',
-        parts: [{ text: String(prompt).slice(0, 1000) }]
+        parts: userParts
     });
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`;
-    const payload = {
-        systemInstruction: { parts: [{ text: systemInstructionText }] },
-        contents: contents,
-        tools: [{ googleSearch: {} }],
-        generationConfig: {
-            temperature: 0.7,
-            maxOutputTokens: 800
+    const visionModels = ['gemini-2.0-flash', 'gemini-1.5-flash'];
+    let lastErr = null;
+
+    for (const model of visionModels) {
+        try {
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
+            const payload = {
+                systemInstruction: { parts: [{ text: systemInstructionText }] },
+                contents: contents,
+                generationConfig: {
+                    temperature: 0.7,
+                    maxOutputTokens: 1000
+                }
+            };
+
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+                signal: AbortSignal.timeout(25000)
+            });
+
+            if (response.status === 429) {
+                const err = new Error('Gemini Vision 429 rate limit exceeded');
+                err.status = 429;
+                err.isRateLimit = true;
+                throw err;
+            }
+
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({}));
+                const err = new Error(errData.error?.message || `Gemini Vision error (${response.status})`);
+                if (response.status === 429 || err.message.toLowerCase().includes('quota') || err.message.toLowerCase().includes('rate')) {
+                    err.status = 429;
+                    err.isRateLimit = true;
+                }
+                throw err;
+            }
+
+            const data = await response.json();
+            let replyText = data.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
+            replyText = cleanAIResponse(replyText);
+            if (replyText && replyText.trim().length > 0) return replyText.trim();
+        } catch (e) {
+            console.warn(`[Gemini Vision] Model ${model} notice: ${e.message}. Cascading...`);
+            lastErr = e;
         }
-    };
-
-    let response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(15000)
-    });
-
-    if (!response.ok) {
-        delete payload.tools;
-        response = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-            signal: AbortSignal.timeout(15000)
-        });
     }
 
-    if (response.status === 429) {
-        const err = new Error('Gemini 429 rate limit exceeded');
-        err.status = 429;
-        err.isRateLimit = true;
-        throw err;
-    }
-
-    if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        const err = new Error(errData.error?.message || `Gemini error (${response.status})`);
-        if (response.status === 429 || err.message.toLowerCase().includes('quota') || err.message.toLowerCase().includes('rate')) {
-            err.status = 429;
-            err.isRateLimit = true;
-        }
-        throw err;
-    }
-
-    const data = await response.json();
-    const replyText = data.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
-    if (replyText && replyText.trim().length > 0) return replyText.trim();
-    throw new Error('Gemini returned empty candidate');
+    throw lastErr || new Error('Gemini Vision returned empty candidate.');
 }
 
-// Main AI Handler: Prioritizes Groq (14.4k/day) & Gemini (1.5k/day), auto-cascades to OpenRouter, with accurate error reporting
-async function generateAIResponse(prompt, channelId, serverContext) {
+// Main AI Handler: Routes Images & GIFs to Gemini Vision, and all Text to Groq (with OpenRouter fallback)
+async function generateAIResponse(prompt, channelId, serverContext, imageUrls = []) {
     const groqKey = process.env.GROQ_API_KEY?.trim();
     const geminiKey = process.env.GEMINI_API_KEY?.trim();
     const openrouterKey = process.env.OPENROUTER_API_KEY?.trim();
 
-    const configuredProviders = [];
-    if (groqKey) configuredProviders.push('groq');
-    if (geminiKey) configuredProviders.push('gemini');
-    if (openrouterKey) configuredProviders.push('openrouter');
+    // ==========================================
+    // 📸 VISION PIPELINE: Images, GIFs & Replies (Exclusively Gemini)
+    // ==========================================
+    if (imageUrls && imageUrls.length > 0) {
+        if (!geminiKey) {
+            return `📸 **זיהיתי ששלחת תמונה או גיף!**
+כדי שאוכל לראות, לפענח ולהגיב על תמונות, ממים וגיפים, יש צורך במפתח חינמי של **Google Gemini Vision**:
 
-    if (configuredProviders.length === 0) {
+1️⃣ פתח מפתח בחינם תוך שניות בקישור: **https://aistudio.google.com/app/apikey**
+2️⃣ בלוח הניהול של **bot-hosting.net** הוסף לקובץ \`.env\` שלך:
+\`GEMINI_API_KEY=המפתח_שלך_מגוגל\`
+3️⃣ לחץ שמירה ועשה **Restart** לבוט!
+
+*(שיחות טקסט רגילות ממשיכות לעבוד כרגיל דרך Groq!)*`;
+        }
+
+        const history = conversationHistories.get(channelId) || [];
+        const systemInstructionText = `You are "null", a brilliant, sharp-witted, highly observant, and helpful AI companion living inside a Discord server.
+${serverContext}
+Core Multimodal Vision Capabilities:
+- You have exceptional visual intelligence. Carefully examine images, screenshots, memes, diagrams, coding errors, art, and GIFs provided to you.
+- Respond fluently in the language the user addresses you in (Hebrew, English, etc.).
+- If analyzing a meme or GIF, explain the humor, reference, and context with wit and charm.
+- If analyzing code or an error screenshot, identify the exact issue and provide the solution.
+- CRITICAL: NEVER output internal monologue, thinking process (<think>), or start with "User: ...". Reply directly and naturally as null.`;
+
+        try {
+            const visionReply = await callGeminiVision(geminiKey, systemInstructionText, history, prompt, imageUrls);
+            if (visionReply && visionReply.length > 0) {
+                return visionReply;
+            }
+        } catch (err) {
+            console.error('Gemini Vision error:', err.message);
+            if (err.isRateLimit || err.status === 429) {
+                return `⏳ **Gemini Vision הגיע למגבלת קצב רגעית (Rate Limit).** אנא נסה שוב בעוד דקה!`;
+            }
+            return `⚠️ **הייתה שגיאה בעיבוד התמונה עם Gemini Vision:** \`${err.message}\``;
+        }
+    }
+
+    // ==========================================
+    // 💬 TEXT PIPELINE: Exclusively Groq (with OpenRouter fallback)
+    // ==========================================
+    if (!groqKey && !openrouterKey) {
         return `👋 **Hey! My AI brain is ready, but I need an AI token to activate my thoughts!**
 
 🔑 **How to add your API key**:
 In your **bot-hosting.net** panel:
 - Open \`.env\` in **File Manager** (or Environment Variables)
-- Add: \`GROQ_API_KEY=your_key_here\` (or \`OPENROUTER_API_KEY\`, \`GEMINI_API_KEY\`)
+- Add: \`GROQ_API_KEY=your_key_here\`
 - Click **Save** and **Restart**!`;
     }
 
@@ -628,28 +765,27 @@ Core Personality & Capabilities:
 - You are knowledgeable, perceptive, and quick-witted with a cool, natural Discord vibe.
 - You speak fluently in the language the user speaks to you (Hebrew, English, etc.). Answer with high intelligence, depth, and great clarity.
 - When answering complex, factual, or programming questions, provide high-quality, comprehensive answers with clean markdown.
-- NEVER show internal reasoning, thinking process (<think>), or monologue. Directly output your final, polished response.
+- CRITICAL: Never show internal reasoning, thinking process (<think>), or monologue. Directly output your final, polished response. Never start with "User: ...", "They want ...", or "The user asks ...".
 - When live web search results are provided above, use them directly to provide accurate, up-to-date facts (current teams, latest seasons, scores, news).
 - You remember recent conversation in this channel and understand who is speaking to you.
 - Do not mention that you are an AI model or prompt; just talk naturally as null.`;
 
-    // Smart Rotation & Execution Order
+    // Only Groq and OpenRouter for text! Gemini is reserved exclusively for images & GIFs.
+    const textProviders = [];
+    if (groqKey) textProviders.push('groq');
+    if (openrouterKey) textProviders.push('openrouter');
+
     const now = Date.now();
-    const healthyProviders = configuredProviders.filter(p => !aiCooldowns[p] || aiCooldowns[p] <= now);
-    const candidateList = healthyProviders.length > 0 ? healthyProviders : [...configuredProviders];
+    const healthyProviders = textProviders.filter(p => !aiCooldowns[p] || aiCooldowns[p] <= now);
+    const candidateList = healthyProviders.length > 0 ? healthyProviders : [...textProviders];
 
-    let executionOrder = [];
-    if (candidateList.includes('groq') && candidateList.includes('gemini')) {
-        const highTier = ['groq', 'gemini'];
-        const rot = (aiRotationIndex++) % 2;
-        executionOrder = [highTier[rot], highTier[1 - rot]];
-        if (candidateList.includes('openrouter')) executionOrder.push('openrouter');
-    } else {
-        executionOrder = [...candidateList];
-    }
+    // Priority: Groq first (14.4k/day, fast), OpenRouter fallback
+    const executionOrder = [];
+    if (candidateList.includes('groq')) executionOrder.push('groq');
+    if (candidateList.includes('openrouter')) executionOrder.push('openrouter');
 
-    // Append any providers currently on cooldown as last-resort fallback
-    for (const p of configuredProviders) {
+    // Append any providers on cooldown
+    for (const p of textProviders) {
         if (!executionOrder.includes(p)) executionOrder.push(p);
     }
 
@@ -660,8 +796,6 @@ Core Personality & Capabilities:
             let reply = null;
             if (provider === 'groq') {
                 reply = await callGroq(groqKey, systemInstructionText, history, prompt);
-            } else if (provider === 'gemini') {
-                reply = await callGemini(geminiKey, systemInstructionText, history, prompt);
             } else if (provider === 'openrouter') {
                 reply = await callOpenRouter(openrouterKey, systemInstructionText, history, prompt);
             }
@@ -679,20 +813,18 @@ Core Personality & Capabilities:
         } catch (err) {
             providerErrors[provider] = err.message;
             if (err.isRateLimit || err.status === 429) {
-                // Short cooldown for Groq (10s) vs OpenRouter daily quota (30m)
                 const cooldownMs = (provider === 'groq') ? 10 * 1000 : 30 * 60 * 1000;
                 aiCooldowns[provider] = Date.now() + cooldownMs;
                 console.warn(`⚠️ [AI Fallback] Provider "${provider}" rate limited (${err.message}). Cascading to next provider...`);
             } else {
-                aiCooldowns[provider] = Date.now() + (10 * 1000); // 10-second error cooldown
+                aiCooldowns[provider] = Date.now() + (10 * 1000);
                 console.warn(`⚠️ [AI Fallback] Provider "${provider}" error (${err.message}). Cascading to next provider...`);
             }
         }
     }
 
-    // If ALL providers failed, show exact honest reason per provider:
     const errorLines = Object.entries(providerErrors).map(([p, e]) => `• **${p}**: ${e}`).join('\n');
-    return `⚠️ **I couldn't get a response from my AI providers right now:**\n${errorLines}\n*Please wait a few moments and try again.*`;
+    return `⚠️ **I couldn't get a response from my AI text providers right now:**\n${errorLines}\n*Please wait a few moments and try again.*`;
 }
 
 // ==========================================
@@ -845,11 +977,16 @@ const slashCommands = [
         ),
     new SlashCommandBuilder()
         .setName('ask')
-        .setDescription('Ask the null AI brain anything (web search & reasoning enabled)')
+        .setDescription('Ask null anything (Text via Groq, Images/GIFs via Gemini Vision)')
         .addStringOption(option =>
             option.setName('question')
                 .setDescription('What do you want to ask null?')
                 .setRequired(true)
+        )
+        .addAttachmentOption(option =>
+            option.setName('image')
+                .setDescription('Optional image or GIF for Gemini Vision analysis')
+                .setRequired(false)
         ),
     new SlashCommandBuilder()
         .setName('pause')
@@ -955,12 +1092,13 @@ client.on('messageCreate', async (message) => {
     // Check if bot was mentioned (@null)
     const isMentioned = message.mentions.users.has(client.user.id) && !message.mentions.everyone && !message.content.includes('@here');
 
-    // Check if user replied to null's previous message
+    // Check if user replied to a message
     let isReplyToBot = false;
+    let referencedMessage = null;
     if (message.reference && message.reference.messageId) {
         try {
-            const repliedMessage = await message.channel.messages.fetch(message.reference.messageId).catch(() => null);
-            if (repliedMessage && repliedMessage.author.id === client.user.id) {
+            referencedMessage = await message.channel.messages.fetch(message.reference.messageId).catch(() => null);
+            if (referencedMessage && referencedMessage.author.id === client.user.id) {
                 isReplyToBot = true;
             }
         } catch {}
@@ -971,9 +1109,48 @@ client.on('messageCreate', async (message) => {
 
     if (!isMentioned && !isReplyToBot && !isDM) return;
 
-    // Remove @mention from prompt text
+    // Extract images and GIFs from current message
+    let allImages = extractImagesFromMessage(message);
+
+    // If Tenor/Giphy link in message but Discord embeds haven't populated yet, wait 600ms and refetch
+    if (allImages.length === 0 && /(tenor\.com|giphy\.com)/i.test(message.content)) {
+        await new Promise(r => setTimeout(r, 600));
+        const refreshed = await message.channel.messages.fetch(message.id).catch(() => null);
+        if (refreshed) {
+            allImages = extractImagesFromMessage(refreshed);
+        }
+    }
+
+    // Extract images and context if replying to an image or message
+    let replyContext = '';
+    if (referencedMessage) {
+        const refImages = extractImagesFromMessage(referencedMessage);
+        if (refImages.length > 0) {
+            allImages = [...allImages, ...refImages];
+            const authorName = referencedMessage.member?.displayName || referencedMessage.author.username;
+            replyContext = ` (User is replying to an image/GIF from ${authorName}${referencedMessage.content ? `: "${referencedMessage.content}"` : ''})`;
+        } else if (referencedMessage.content) {
+            const authorName = referencedMessage.member?.displayName || referencedMessage.author.username;
+            replyContext = ` (Replying to ${authorName}: "${referencedMessage.content}")`;
+        }
+    }
+
+    // Clean @mention from prompt text
     const botMentionRegex = new RegExp(`<@!?${client.user.id}>`, 'g');
-    const cleanPrompt = message.content.replace(botMentionRegex, '').trim() || 'Hello!';
+    let cleanPrompt = message.content.replace(botMentionRegex, '').trim();
+
+    // Default prompt when user sends an image/GIF with no text
+    if (!cleanPrompt) {
+        if (allImages.length > 0) {
+            cleanPrompt = 'תאר מה רואים בתמונה או בגיף הזה, ותגיב על זה בצורה מעניינת ומפורטת';
+        } else {
+            cleanPrompt = 'שלום!';
+        }
+    }
+
+    if (replyContext) {
+        cleanPrompt += replyContext;
+    }
 
     const speakerName = message.member?.displayName || message.author.username;
 
@@ -983,15 +1160,15 @@ client.on('messageCreate', async (message) => {
     } catch {}
 
     try {
-        // Fetch a small batch of guild members to ensure member context is fresh
+        // Fetch small batch of members to ensure context is populated
         if (message.guild && message.guild.members.cache.size < 20) {
             await message.guild.members.fetch({ limit: 50 }).catch(() => {});
         }
 
         const serverContext = buildServerContext(message);
 
-        // Generate AI response
-        const aiReply = await generateAIResponse(cleanPrompt, message.channel.id, serverContext);
+        // Generate AI response (routes to Gemini Vision if images present, or Groq if text only)
+        const aiReply = await generateAIResponse(cleanPrompt, message.channel.id, serverContext, allImages);
 
         // Store user message & bot reply in 50-message conversational memory
         addMessageToHistory(message.channel.id, 'user', cleanPrompt, speakerName);
@@ -1093,11 +1270,21 @@ client.on('interactionCreate', async (interaction) => {
     // --- /ask ---
     if (commandName === 'ask') {
         const question = interaction.options.getString('question');
+        const attachment = interaction.options.getAttachment('image');
+        const imageUrls = [];
+        if (attachment) {
+            const isImg = attachment.contentType?.startsWith('image/') ||
+                /\.(png|jpe?g|gif|webp|bmp|tiff)$/i.test(attachment.name || attachment.url);
+            if (isImg && attachment.url) {
+                imageUrls.push(attachment.url);
+            }
+        }
+
         await interaction.deferReply();
 
         try {
             const serverContext = buildServerContext(interaction);
-            const aiReply = await generateAIResponse(question, interaction.channelId, serverContext);
+            const aiReply = await generateAIResponse(question, interaction.channelId, serverContext, imageUrls);
 
             addMessageToHistory(interaction.channelId, 'user', question, interaction.user.username);
             addMessageToHistory(interaction.channelId, 'model', aiReply, 'null');
@@ -1327,13 +1514,13 @@ client.on('interactionCreate', async (interaction) => {
         const connectedNodes = client.riffy.leastUsedNodes.map(n => `🟢 ${n.name}`).join('\n') || '⚠️ Reconnecting...';
 
         const activeAiList = [];
-        if (process.env.GROQ_API_KEY) activeAiList.push('Groq (14.4k/day)');
-        if (process.env.OPENROUTER_API_KEY) activeAiList.push('OpenRouter');
-        if (process.env.GEMINI_API_KEY) activeAiList.push('Gemini (1.5k/day)');
+        if (process.env.GROQ_API_KEY) activeAiList.push('Groq (Text & Web Search)');
+        if (process.env.GEMINI_API_KEY) activeAiList.push('Gemini Vision (Images & GIFs)');
+        if (process.env.OPENROUTER_API_KEY) activeAiList.push('OpenRouter (Backup)');
 
         const aiStatus = activeAiList.length > 0
-            ? `🟢 Active (${activeAiList.join(' ↔ ')} Auto-Rotation & Cascade)`
-            : '🟡 Waiting for Key (Add GROQ_API_KEY in .env)';
+            ? `🟢 Active (${activeAiList.join(' | ')})`
+            : '🟡 Waiting for Key (Add GROQ_API_KEY / GEMINI_API_KEY in .env)';
 
         const embed = new EmbedBuilder()
             .setTitle('⚙️ null — System, Music & AI Brain Status')
