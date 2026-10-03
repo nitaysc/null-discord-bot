@@ -233,62 +233,129 @@ function splitDiscordMessage(text, maxLen = 1950) {
     return chunks;
 }
 
+// Response cleaner: completely removes internal thinking, <think> tags, and CoT monologue
+function cleanAIResponse(text) {
+    if (!text) return '';
+    let cleaned = text;
+
+    // Remove XML thinking tags
+    cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/gi, '');
+    cleaned = cleaned.replace(/<thought>[\s\S]*?<\/thought>/gi, '');
+
+    // Strip raw reasoning monologue if the model started talking to itself
+    if (/^User:\s*".*?"\s*They want/i.test(cleaned) || /^The user (asks|wants|is asking)/i.test(cleaned)) {
+        const parts = cleaned.split(/\n\n+/);
+        if (parts.length > 1) {
+            const lastPart = parts[parts.length - 1].trim();
+            if (!/^User:|^The user/i.test(lastPart)) {
+                cleaned = lastPart;
+            }
+        }
+    }
+
+    return cleaned.trim();
+}
+
+// Smart Multilingual Search Intent Classifier:
+// Detects when the user actually needs live real-time web facts (teams, seasons, scores, news, prices, weather)
+// Avoids searching on casual chat, greetings, repeat requests, jokes, or creative prompts
+function shouldSearchWeb(prompt) {
+    const text = prompt.trim();
+
+    // 1. Never search on casual conversational greetings or short small talk
+    if (/^(היי|שלום|מה קורה|מה נשמע|מה שלומך|הי|בוקר טוב|ערב טוב|לילה טוב|תודה|סבבה|אחלה|חחח|hi|hello|hey|how are you|what's up|sup|thanks|ok|cool|bye|good morning|yo)\b/i.test(text) && text.length < 35) {
+        return false;
+    }
+    // 2. Never search on bot identity questions
+    if (/^(מי אתה|מה אתה|מה אתה יכול לעשות|who are you|what can you do|what are you)\b/i.test(text)) {
+        return false;
+    }
+    // 3. Never search on creative, repetition, code, or joke prompts unless containing real-time keywords
+    if (/^(תכתוב|תספר|תרגם|תמציא|תסביר|תקודד|כתוב|ספר|תעשה|write|tell me a joke|repeat|say|translate|code|explain)\b/i.test(text) && !/(היום|עכשיו|כרגע|העונה|חדשות|today|current|latest|news)/i.test(text)) {
+        return false;
+    }
+
+    // 4. Explicit search commands
+    if (/(חפש|תחפש|תגגל|גוגל|תבדוק ברשת|תבדוק באינטרנט|search|google|look up|check online)/i.test(text)) {
+        return true;
+    }
+
+    // 5. Hebrew real-time indicators (current team, season, scores, today, now, latest, weather, standings)
+    const hebrewRealTime = /(היום|עכשיו|כרגע|השנה|העונה|האחרון|האחרונה|הכי חדש|הכי עדכני|חדשות|תוצאה|תוצאות|מזג אוויר|מזג האוויר|באיזה קבוצה|איפה.*משחק|מתי יוצא|מי ניצח|כמה עולה)/i.test(text);
+
+    // 6. English real-time indicators
+    const englishRealTime = /\b(today|tonight|right now|currently|current|latest|recent|newest|this season|what season|which team|score|standings|roster|weather|who won|price of)\b/i.test(text);
+
+    return hebrewRealTime || englishRealTime;
+}
+
 // Intelligent Search Query Extractor: Cleans conversational filler words
 function extractSearchQuery(prompt) {
     let clean = prompt.replace(/<@!?\d+>/g, '').trim();
-    clean = clean.replace(/^(can you |could you |please |hey |null,?\s*|bot,?\s*)*/i, '');
+    clean = clean.replace(/^(can you |could you |please |hey |null,?\s*|bot,?\s*|תגיד לי |תבדוק |תחפש |חפש |תגגל )*/i, '');
     clean = clean.replace(/^(search( the web)?( for)?|look up|google|find( out)?( about)?|tell me( about)?|what is|who is)\s+/i, '');
     return clean.replace(/[?!.]+$/, '').trim() || prompt.trim();
 }
 
-// Multi-Source Live Web Search (DuckDuckGo Instant Answers + Wikipedia + Google News)
+// Multi-Source Live Web Search (DuckDuckGo HTML + Google News RSS + Wikipedia)
 async function searchWeb(query) {
     const results = [];
+    const isHebrew = /[\u0590-\u05FF]/.test(query);
 
-    // 1. DuckDuckGo Instant Answer
+    // 1. DuckDuckGo Web Snippets (Fast real-time web results)
     try {
-        const ddgRes = await fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1`, {
-            headers: { 'User-Agent': 'null-discord-bot/1.0' },
-            signal: AbortSignal.timeout(3000)
+        const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+        const ddgRes = await fetch(ddgUrl, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
+            signal: AbortSignal.timeout(3500)
         });
         if (ddgRes.ok) {
-            const data = await ddgRes.json();
-            if (data.Abstract) {
-                results.push(`- [Web Summary]: ${data.Abstract}`);
-            } else if (data.RelatedTopics?.[0]?.Text) {
-                results.push(`- [Web Summary]: ${data.RelatedTopics[0].Text}`);
+            const html = await ddgRes.text();
+            const matches = [...html.matchAll(/<a class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g)].slice(0, 3);
+            for (const m of matches) {
+                const snippet = m[1].replace(/<[^>]+>/g, '').replace(/&quot;/g, '"').replace(/&#x27;/g, "'").trim();
+                if (snippet) results.push(`- [Web Fact]: ${snippet}`);
             }
         }
     } catch {}
 
-    // 2. Wikipedia Search API
+    // 2. Google News & Live Real-Time RSS (Localized IL/US for scores, latest events, 2026 data)
     try {
-        const wikiUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&utf8=`;
-        const wikiRes = await fetch(wikiUrl, { signal: AbortSignal.timeout(3000) });
-        if (wikiRes.ok) {
-            const data = await wikiRes.json();
-            const snippets = data.query?.search?.slice(0, 2) || [];
-            for (const s of snippets) {
-                const cleanSnippet = s.snippet.replace(/<[^>]+>/g, '').replace(/&quot;/g, '"');
-                results.push(`- [Wikipedia]: ${s.title}: ${cleanSnippet}`);
-            }
-        }
-    } catch {}
-
-    // 3. Google News & Live RSS Search
-    try {
-        const newsUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`;
-        const newsRes = await fetch(newsUrl, { signal: AbortSignal.timeout(3000) });
+        const hl = isHebrew ? 'he' : 'en-US';
+        const gl = isHebrew ? 'IL' : 'US';
+        const ceid = isHebrew ? 'IL:he' : 'US:en';
+        const newsUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=${hl}&gl=${gl}&ceid=${ceid}`;
+        const newsRes = await fetch(newsUrl, { signal: AbortSignal.timeout(3500) });
         if (newsRes.ok) {
             const xml = await newsRes.text();
             const items = [...xml.matchAll(/<title>([^<]+)<\/title>[\s\S]*?<pubDate>([^<]+)<\/pubDate>/g)].slice(1, 4);
             for (const item of items) {
-                results.push(`- [Live News]: ${item[1]} (${item[2]})`);
+                results.push(`- [Live News / Fact]: ${item[1]} (${item[2]})`);
             }
         }
     } catch {}
 
-    return results.join('\n');
+    // 3. Wikipedia Entity Search & Extract
+    try {
+        const wikiLang = isHebrew ? 'he' : 'en';
+        const wikiSearchUrl = `https://${wikiLang}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&utf8=`;
+        const sRes = await fetch(wikiSearchUrl, { signal: AbortSignal.timeout(3000) });
+        if (sRes.ok) {
+            const sData = await sRes.json();
+            const topTitle = sData.query?.search?.[0]?.title;
+            if (topTitle) {
+                const sumRes = await fetch(`https://${wikiLang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(topTitle)}`, { signal: AbortSignal.timeout(2500) });
+                if (sumRes.ok) {
+                    const sumData = await sumRes.json();
+                    if (sumData.extract) {
+                        results.push(`- [Wikipedia Summary - ${topTitle}]: ${sumData.extract}`);
+                    }
+                }
+            }
+        }
+    } catch {}
+
+    return results.slice(0, 5).join('\n');
 }
 
 // ==========================================
@@ -302,11 +369,11 @@ const aiCooldowns = {
     gemini: 0
 };
 
-// 1. Groq Cloud Engine (14,400 req/day - Multi-Model Resilient Cascade)
+// 1. Groq Cloud Engine (14,400 req/day - Qwen 27B Primary + Never Leak Reasoning)
 async function callGroq(groqKey, systemInstructionText, history, prompt) {
     const models = [
-        'openai/gpt-oss-120b',
         'qwen/qwen3.8-27b',
+        'openai/gpt-oss-120b',
         'openai/gpt-oss-20b',
         'allam-2-7b'
     ];
@@ -347,9 +414,13 @@ async function callGroq(groqKey, systemInstructionText, history, prompt) {
 
             if (res.ok) {
                 const choice = data.choices?.[0]?.message;
-                const text = choice?.content?.trim() || choice?.reasoning?.trim();
-                if (text && text.length > 0) {
-                    return text;
+                // NEVER return choice.reasoning! Only take content, and strip thoughts!
+                let text = choice?.content?.trim();
+                if (text) {
+                    text = cleanAIResponse(text);
+                    if (text.length > 0) {
+                        return text;
+                    }
                 }
             }
 
@@ -358,7 +429,7 @@ async function callGroq(groqKey, systemInstructionText, history, prompt) {
                 anyRateLimited = true;
                 console.warn(`[Groq] Model "${model}" hit per-minute limit (${errMsg}). Cascading to next model...`);
             } else {
-                console.warn(`[Groq] Model "${model}" failed (${errMsg}). Cascading to next model...`);
+                console.warn(`[Groq] Model "${model}" notice (${errMsg}). Cascading to next model...`);
             }
             lastErr = new Error(errMsg);
         } catch (e) {
@@ -519,17 +590,16 @@ In your **bot-hosting.net** panel:
 
     const history = conversationHistories.get(channelId) || [];
 
-    // Real-Time Web Search Trigger & Extraction
+    // Real-Time Web Search Trigger & Extraction (Smart Multilingual Classifier)
     let liveWebContext = '';
     let executedSearchQuery = null;
-    const wantsSearch = /\b(search|look up|google|who|what|when|where|why|how|news|latest|today|recent|update|price|release|weather|score|game|film|movie)\b/i.test(prompt);
 
-    if (wantsSearch) {
+    if (shouldSearchWeb(prompt)) {
         executedSearchQuery = extractSearchQuery(prompt);
         if (executedSearchQuery) {
             const findings = await searchWeb(executedSearchQuery);
             if (findings) {
-                liveWebContext = `\nREAL-TIME LIVE WEB SEARCH RESULTS for "${executedSearchQuery}":\n${findings}\n(Use these verified real-time web search facts to answer accurately. Cite the facts!)\n`;
+                liveWebContext = `\nREAL-TIME LIVE WEB SEARCH RESULTS for "${executedSearchQuery}":\n${findings}\n(Use these verified real-time facts to answer accurately. If asked about current teams, seasons, scores, or news, rely on these facts!)\n`;
             }
         }
     }
@@ -538,12 +608,13 @@ In your **bot-hosting.net** panel:
 ${serverContext}
 ${liveWebContext}
 Core Personality & Capabilities:
-- You have pair-programming capabilities, deep technical knowledge, and sharp conversational skills.
-- You have live internet access to search the web and check current facts, news, and real-time information.
+- Answer naturally, helpfully, and concisely for Discord chat. Use code blocks for code and bold for emphasis.
+- You speak fluently in the language the user speaks to you (Hebrew, English, etc.).
+- NEVER show internal reasoning, thinking process, or monologue. Directly output your final clean response.
+- When live web search results are provided above, use them to provide up-to-date accurate facts (current teams, current seasons, scores, news).
 - You remember recent conversation in this channel.
 - You can see members, their roles, server information, and details about who is speaking to you.
-- Answer helpfully, naturally, and concisely for Discord chat. Use code blocks for code and bold for emphasis.
-- Do not mention that you are a system prompt; just talk naturally as null.`;
+- Do not mention that you are an AI model or prompt; just talk naturally as null.`;
 
     // Smart Rotation & Execution Order
     const now = Date.now();
