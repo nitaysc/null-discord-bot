@@ -1,136 +1,127 @@
-# ∅ null - Discord Bot
+# ∅ null - Discord Bot (with High-Quality Music Engine)
 
-A sleek, lightweight Discord bot designed to stay online 24/7 with a custom presence, built with [Discord.js v14](https://discord.js.org/) and ready for deployment on [bot-hosting.net](https://bot-hosting.net).
-
----
-
-## 📋 Features
-
-- 🟢 **Always Online Presence**: Automatically sets status to **Online** with customizable activity text (default: `null`).
-- ⚡ **Slash Commands & Prefix Support**:
-  - `/ping` & `!ping` - Shows real-time bot latency and Discord API latency.
-  - `/null` & `!null` - Displays status card with the bot avatar, uptime, and server count.
-  - `/help` & `!help` - Lists all commands and instructions.
-- 🚀 **Pre-configured for bot-hosting.net**: Works seamlessly on Pterodactyl-based Node.js hosting.
-- 🔒 **Secure Environment Variables**: Keeps your Discord token protected via `.env`.
+A feature-rich Discord bot designed to stay online 24/7 with custom status, interactive music playback (inspired by **Lara** and **Luna Bot**), and complete command support. Built on [Discord.js v14](https://discord.js.org/) and [Discord-Player v7](https://discord-player.js.org/), configured and optimized for [bot-hosting.net](https://bot-hosting.net).
 
 ---
 
-## 🛠️ Step 1: Create the Bot on Discord Developer Portal
+## 🎵 Music Features (Lara & Luna Bot Style)
+
+- 🎧 **Universal Multi-Platform Support**: Stream tracks and playlists from **YouTube**, **Spotify**, **SoundCloud**, **Apple Music**, and direct links.
+- 🎛️ **Interactive Controls on Now Playing**: Every time a song starts, an embed with interactive buttons is provided:
+  - ⏯️ **Pause / Resume**
+  - ⏭️ **Skip**
+  - ⏹️ **Stop & Leave**
+  - 🔀 **Shuffle**
+  - 📜 **Queue Viewer**
+- 📊 **Visual Progress Bar**: Shows current playback position and song duration with dynamic audio progress indicators.
+- ⚡ **Full Slash & Prefix Commands**: Use `/play` or `!play` interchangeably.
+- 🧹 **Smart Auto-Disconnect**: Automatically leaves the channel after everyone disconnects or when the queue completes to save server memory and bandwidth.
+
+---
+
+## 📜 Complete Command List
+
+### 🎶 Music Commands
+| Slash Command | Prefix Alternative | Description |
+| :--- | :--- | :--- |
+| `/play <query>` | `!play <query>` | Play a song or playlist (name or URL from YouTube, Spotify, SoundCloud, etc.) |
+| `/pause` | `!pause` | Pause music playback |
+| `/resume` | `!resume` | Resume paused playback |
+| `/skip` | `!skip` | Skip the current track |
+| `/stop` | `!stop` | Stop playback, clear queue, and leave voice channel |
+| `/queue` | `!queue` | View all songs currently waiting in the queue |
+| `/nowplaying` | `!np` or `!nowplaying`| Show current song, artist, requester, and interactive progress bar |
+| `/shuffle` | `!shuffle` | Randomize the order of songs in the queue |
+| `/volume <1-100>` | `!volume <1-100>` | Adjust music volume level |
+
+### 🛠️ General & Utility Commands
+| Slash Command | Prefix Alternative | Description |
+| :--- | :--- | :--- |
+| `/ping` | `!ping` | Measure bot latency and Discord Gateway latency |
+| `/null` | `!null` | Display status card with avatar, uptime, and servers |
+| `/help` | `!help` | Show full command guide |
+
+---
+
+## 🛠️ Step 1: Discord Developer Portal Setup
 
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications).
-2. Click **New Application** (top right) and name it **`null`**.
-3. **Add your Profile Picture**:
-   - On the **General Information** page, upload your chosen picture as the **App Icon**.
-4. **Configure the Bot**:
-   - In the left sidebar, click **Bot**.
-   - Under **Username**, ensure it is named `null`.
-   - Upload your picture in the **Icon / Avatar** section here as well.
-   - Click **Reset Token** and copy your **Bot Token**. *(Keep this secret!)*
-5. **Enable Intents** (Important):
-   - Scroll down to **Privileged Gateway Intents**.
-   - Enable:
-     - ✅ **Presence Intent**
+2. Click **New Application** and name it **`null`**.
+3. **Upload Profile Picture**:
+   - In **General Information**, upload your chosen picture as the **App Icon**.
+   - In the **Bot** tab, upload the same picture in the **Icon / Avatar** section and confirm the username is **`null`**.
+4. **Get Bot Token**:
+   - In the **Bot** tab, click **Reset Token** and copy it.
+5. **Enable Privileged Gateway Intents**:
+   - Scroll down to **Privileged Gateway Intents** and enable:
+     - ✅ **Presence Intent** (For online status)
      - ✅ **Server Members Intent**
-     - ✅ **Message Content Intent**
+     - ✅ **Message Content Intent** (For prefix commands)
    - Click **Save Changes**.
-6. **Invite the Bot to your Discord Server**:
-   - Go to **OAuth2** ➔ **URL Generator** in the left sidebar.
+6. **Invite null to Your Server**:
+   - Go to **OAuth2 ➔ URL Generator**.
    - Under **Scopes**, check:
      - `bot`
      - `applications.commands`
-   - Under **Bot Permissions**, check:
+   - Under **Bot Permissions**, select:
+     - `Connect` (Voice)
+     - `Speak` (Voice)
      - `Send Messages`
      - `Embed Links`
      - `Read Message History`
      - `View Channels`
-     *(Or select `Administrator` for full access).*
-   - Copy the generated URL at the bottom, paste it into your browser, select your server, and click **Authorize**.
+     *(Or select `Administrator` for testing).*
+   - Copy the link at the bottom and open it in your browser to invite **null** to your server.
 
 ---
 
-## 🌐 Step 2: Host on bot-hosting.net
+## 🌐 Step 2: Hosting on bot-hosting.net
 
-[bot-hosting.net](https://bot-hosting.net) provides free 24/7 bot hosting.
-
-1. Go to [bot-hosting.net](https://bot-hosting.net) and log in with your Discord account.
-2. Click **Create Server**.
-3. Select **NodeJS** as the server type / software.
-4. Open your server in the **Control Panel** (panel.bot-hosting.net).
-5. Go to the **File Manager** tab:
+1. Log into [bot-hosting.net](https://bot-hosting.net) using your Discord account.
+2. Click **Create Server** and select **NodeJS** as the software type.
+3. Open your server in the **Control Panel** (panel.bot-hosting.net).
+4. In the **File Manager**:
    - Upload `index.js` and `package.json`.
    - Click **New File**, name it `.env`, and paste:
      ```env
      DISCORD_TOKEN=your_copied_bot_token_here
-     BOT_STATUS=null
+     BOT_STATUS=null • /play
      ```
-   - Click **Create File / Save**.
-   *(Note: You do not need to upload `node_modules`. The server installs them automatically).*
-6. Go to the **Startup** tab:
-   - Ensure the **Startup File** is set to `index.js`.
-7. Go to the **Console** tab and click **Start**:
-   - The server will run `npm install` and launch `index.js`.
-   - You will see:
-     ```
+   - Click **Save**.
+   *(Note: Do NOT upload `node_modules`. The panel will automatically run `npm install` on launch).*
+5. In the **Startup** tab, confirm **Startup File** is `index.js`.
+6. In the **Console** tab, click **Start**.
+   - Watch the console install dependencies and log:
+     ```text
      ✅ [ONLINE] Logged in as: null#0000
-     ✨ Presence status set to: ONLINE (null)
+     📦 Loading audio extractors (SoundCloud, Spotify, YouTube, etc.)...
+     ✅ 7 Audio extractors loaded successfully!
+     🔄 Registering global slash commands...
+     ✅ Global slash commands successfully updated!
      ```
-   - Check Discord — your bot `null` is now **Online** with its custom picture!
+   - Join any voice channel on your Discord server and type `/play faded` or `!play faded`!
 
 ---
 
-## 💻 Step 3: Local Testing (Optional)
+## 🐙 Step 3: Push to Your GitHub
 
-If you want to run or test the bot on your computer before uploading:
+To save and update this code on your GitHub:
 
-1. Clone or open this folder in terminal.
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
-3. Create `.env` from `.env.example` and insert your token:
-   ```env
-   DISCORD_TOKEN=your_discord_bot_token_here
-   BOT_STATUS=null
-   ```
-4. Start the bot:
-   ```bash
-   npm start
-   ```
-
----
-
-## 🐙 Step 4: Push to Your GitHub
-
-To link and push this bot to your GitHub account:
-
-### Method A: Using GitHub CLI (`gh`)
-Run this in PowerShell / Terminal:
-```bash
-# 1. Login to GitHub
-gh auth login
-
-# 2. Create the repository on your GitHub and push
+### Option A: Using GitHub CLI
+```powershell
+cd "C:\Users\homol\.gemini\antigravity\scratch\null-discord-bot"
+git add .
+git commit -m "Add high-quality music bot engine with interactive buttons and multi-platform support"
 gh repo create null-discord-bot --public --source=. --push
 ```
 
-### Method B: Using Git & GitHub Web
-1. Go to [github.com/new](https://github.com/new) and create a new repository called `null-discord-bot`.
-2. Run these commands inside this folder:
-```bash
+### Option B: Using Git & GitHub Web
+1. Create a repository named `null-discord-bot` on [github.com/new](https://github.com/new).
+2. Run:
+```powershell
+cd "C:\Users\homol\.gemini\antigravity\scratch\null-discord-bot"
+git add .
+git commit -m "Add high-quality music bot engine with interactive buttons and multi-platform support"
 git remote add origin https://github.com/<YOUR-USERNAME>/null-discord-bot.git
 git push -u origin main
-```
-
----
-
-## 📁 Project Structure
-
-```text
-null-discord-bot/
-├── .env.example       # Sample environment configuration
-├── .gitignore          # Prevents committing node_modules & secret .env
-├── index.js            # Main bot logic, presence handling & commands
-├── package.json        # Node.js project manifest & dependencies
-└── README.md           # Setup, deployment & hosting guide
 ```
