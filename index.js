@@ -233,30 +233,57 @@ function splitDiscordMessage(text, maxLen = 1950) {
     return chunks;
 }
 
-// Lightweight Live Web Search (Google News RSS & Wikipedia)
+// Intelligent Search Query Extractor: Cleans conversational filler words
+function extractSearchQuery(prompt) {
+    let clean = prompt.replace(/<@!?\d+>/g, '').trim();
+    clean = clean.replace(/^(can you |could you |please |hey |null,?\s*|bot,?\s*)*/i, '');
+    clean = clean.replace(/^(search( the web)?( for)?|look up|google|find( out)?( about)?|tell me( about)?|what is|who is)\s+/i, '');
+    return clean.replace(/[?!.]+$/, '').trim() || prompt.trim();
+}
+
+// Multi-Source Live Web Search (DuckDuckGo Instant Answers + Wikipedia + Google News)
 async function searchWeb(query) {
     const results = [];
+
+    // 1. DuckDuckGo Instant Answer
     try {
-        const newsUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`;
-        const newsRes = await fetch(newsUrl, { signal: AbortSignal.timeout(3500) });
-        if (newsRes.ok) {
-            const xml = await newsRes.text();
-            const items = [...xml.matchAll(/<title>([^<]+)<\/title>[\s\S]*?<pubDate>([^<]+)<\/pubDate>/g)].slice(1, 4);
-            for (const item of items) {
-                results.push(`- [Web News]: ${item[1]} (${item[2]})`);
+        const ddgRes = await fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1`, {
+            headers: { 'User-Agent': 'null-discord-bot/1.0' },
+            signal: AbortSignal.timeout(3000)
+        });
+        if (ddgRes.ok) {
+            const data = await ddgRes.json();
+            if (data.Abstract) {
+                results.push(`- [Web Summary]: ${data.Abstract}`);
+            } else if (data.RelatedTopics?.[0]?.Text) {
+                results.push(`- [Web Summary]: ${data.RelatedTopics[0].Text}`);
             }
         }
     } catch {}
 
+    // 2. Wikipedia Search API
     try {
         const wikiUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&utf8=`;
-        const wikiRes = await fetch(wikiUrl, { signal: AbortSignal.timeout(3500) });
+        const wikiRes = await fetch(wikiUrl, { signal: AbortSignal.timeout(3000) });
         if (wikiRes.ok) {
             const data = await wikiRes.json();
             const snippets = data.query?.search?.slice(0, 2) || [];
             for (const s of snippets) {
                 const cleanSnippet = s.snippet.replace(/<[^>]+>/g, '').replace(/&quot;/g, '"');
-                results.push(`- [Knowledge]: ${s.title}: ${cleanSnippet}`);
+                results.push(`- [Wikipedia]: ${s.title}: ${cleanSnippet}`);
+            }
+        }
+    } catch {}
+
+    // 3. Google News & Live RSS Search
+    try {
+        const newsUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`;
+        const newsRes = await fetch(newsUrl, { signal: AbortSignal.timeout(3000) });
+        if (newsRes.ok) {
+            const xml = await newsRes.text();
+            const items = [...xml.matchAll(/<title>([^<]+)<\/title>[\s\S]*?<pubDate>([^<]+)<\/pubDate>/g)].slice(1, 4);
+            for (const item of items) {
+                results.push(`- [Live News]: ${item[1]} (${item[2]})`);
             }
         }
     } catch {}
@@ -282,13 +309,18 @@ In your **bot-hosting.net** panel:
 
     const history = conversationHistories.get(channelId) || [];
 
-    // Check if the query asks for live/current web information
+    // Real-Time Web Search Trigger & Extraction
     let liveWebContext = '';
-    const needsSearch = /\b(who|what|when|where|why|how|news|latest|today|recent|search|google|web|update|weather|score|price|release)\b/i.test(prompt);
-    if (needsSearch) {
-        const findings = await searchWeb(prompt);
-        if (findings) {
-            liveWebContext = `\nLive Internet Search Results:\n${findings}\n`;
+    let executedSearchQuery = null;
+    const wantsSearch = /\b(search|look up|google|who|what|when|where|why|how|news|latest|today|recent|update|price|release|weather|score|game|film|movie)\b/i.test(prompt);
+
+    if (wantsSearch) {
+        executedSearchQuery = extractSearchQuery(prompt);
+        if (executedSearchQuery) {
+            const findings = await searchWeb(executedSearchQuery);
+            if (findings) {
+                liveWebContext = `\nREAL-TIME LIVE WEB SEARCH RESULTS for "${executedSearchQuery}":\n${findings}\n(Use these verified real-time web search facts to answer accurately. Cite the facts!)\n`;
+            }
         }
     }
 
@@ -337,7 +369,11 @@ Core Personality & Capabilities:
         }
 
         const data = await res.json();
-        return data.choices?.[0]?.message?.content || 'I could not generate a response.';
+        let reply = data.choices?.[0]?.message?.content || 'I could not generate a response.';
+        if (executedSearchQuery && liveWebContext) {
+            reply += `\n\n🌐 *Searched the web for: "${executedSearchQuery}"*`;
+        }
+        return reply;
     }
 
     // 2. Google Gemini
