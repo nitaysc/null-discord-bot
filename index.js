@@ -233,41 +233,114 @@ function splitDiscordMessage(text, maxLen = 1950) {
     return chunks;
 }
 
-// Query AI Providers (Gemini 2.0 Flash with Google Search grounding, Groq, or OpenRouter)
+// Lightweight Live Web Search (Google News RSS & Wikipedia)
+async function searchWeb(query) {
+    const results = [];
+    try {
+        const newsUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`;
+        const newsRes = await fetch(newsUrl, { signal: AbortSignal.timeout(3500) });
+        if (newsRes.ok) {
+            const xml = await newsRes.text();
+            const items = [...xml.matchAll(/<title>([^<]+)<\/title>[\s\S]*?<pubDate>([^<]+)<\/pubDate>/g)].slice(1, 4);
+            for (const item of items) {
+                results.push(`- [Web News]: ${item[1]} (${item[2]})`);
+            }
+        }
+    } catch {}
+
+    try {
+        const wikiUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&utf8=`;
+        const wikiRes = await fetch(wikiUrl, { signal: AbortSignal.timeout(3500) });
+        if (wikiRes.ok) {
+            const data = await wikiRes.json();
+            const snippets = data.query?.search?.slice(0, 2) || [];
+            for (const s of snippets) {
+                const cleanSnippet = s.snippet.replace(/<[^>]+>/g, '').replace(/&quot;/g, '"');
+                results.push(`- [Knowledge]: ${s.title}: ${cleanSnippet}`);
+            }
+        }
+    } catch {}
+
+    return results.join('\n');
+}
+
+// Query AI Providers (OpenRouter, Gemini 2.0 Flash, or Groq)
 async function generateAIResponse(prompt, channelId, serverContext) {
+    const openrouterKey = process.env.OPENROUTER_API_KEY?.trim();
     const geminiKey = process.env.GEMINI_API_KEY?.trim();
     const groqKey = process.env.GROQ_API_KEY?.trim();
-    const openrouterKey = process.env.OPENROUTER_API_KEY?.trim();
 
-    if (!geminiKey && !groqKey && !openrouterKey) {
-        return `👋 **Hey! My AI brain is ready, but I need a free AI token to activate my thoughts!**
+    if (!openrouterKey && !geminiKey && !groqKey) {
+        return `👋 **Hey! My AI brain is ready, but I need an AI token to activate my thoughts!**
 
-🔑 **Get a 100% free Gemini API key in 30 seconds** (no credit card needed):
-1. Go to **https://aistudio.google.com/app/apikey**
-2. Click **Create API key**
-3. Copy your key
-4. In your **bot-hosting.net** panel:
-   - Open \`.env\` in **File Manager** (or Environment Variables)
-   - Add: \`GEMINI_API_KEY=your_key_here\`
-   - Click **Save** and **Restart**!
-
-🌐 *Once added, I will have live internet web access (Google Search), remember 50 messages of chat history, and know server members & roles!*`;
+🔑 **How to add your API key**:
+In your **bot-hosting.net** panel:
+- Open \`.env\` in **File Manager** (or Environment Variables)
+- Add: \`OPENROUTER_API_KEY=your_key_here\` (or \`GEMINI_API_KEY\`)
+- Click **Save** and **Restart**!`;
     }
 
     const history = conversationHistories.get(channelId) || [];
 
+    // Check if the query asks for live/current web information
+    let liveWebContext = '';
+    const needsSearch = /\b(who|what|when|where|why|how|news|latest|today|recent|search|google|web|update|weather|score|price|release)\b/i.test(prompt);
+    if (needsSearch) {
+        const findings = await searchWeb(prompt);
+        if (findings) {
+            liveWebContext = `\nLive Internet Search Results:\n${findings}\n`;
+        }
+    }
+
     const systemInstructionText = `You are "null", an advanced, witty, highly intelligent, and helpful AI assistant living inside a Discord server.
 ${serverContext}
-
+${liveWebContext}
 Core Personality & Capabilities:
 - You have pair-programming capabilities, deep technical knowledge, and sharp conversational skills.
-- You have live internet access to search the web and check current facts, news, and real-time information whenever asked or needed.
+- You have live internet access to search the web and check current facts, news, and real-time information.
 - You remember the previous 50 messages of conversation in this channel.
 - You can see members, their roles, server information, and details about who is speaking to you.
 - Answer helpfully, naturally, and concisely for Discord chat. Use code blocks for code and bold for emphasis.
 - Do not mention that you are a system prompt; just talk naturally as null.`;
 
-    // 1. Google Gemini (Recommended - Native live Google Search Grounding)
+    // 1. OpenRouter (Multi-model free tier with automatic fallbacks)
+    if (openrouterKey) {
+        const messages = [{ role: 'system', content: systemInstructionText }];
+        for (const h of history) {
+            messages.push({
+                role: h.role === 'model' ? 'assistant' : 'user',
+                content: h.role === 'user' ? `[${h.name}]: ${h.text}` : h.text
+            });
+        }
+        messages.push({ role: 'user', content: prompt });
+
+        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${openrouterKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                models: [
+                    'qwen/qwen3.8-27b:free',
+                    'nvidia/nemotron-3.5-lightning:free',
+                    'liquid/lfm-2.5-2.6b:free'
+                ],
+                messages: messages,
+                max_tokens: 1000
+            })
+        });
+
+        if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            throw new Error(errData.error?.message || `OpenRouter error (${res.status})`);
+        }
+
+        const data = await res.json();
+        return data.choices?.[0]?.message?.content || 'I could not generate a response.';
+    }
+
+    // 2. Google Gemini
     if (geminiKey) {
         const contents = [];
         for (const h of history) {
@@ -298,7 +371,6 @@ Core Personality & Capabilities:
             body: JSON.stringify(payload)
         });
 
-        // Fallback without tools if googleSearch tool is restricted on key
         if (!response.ok) {
             delete payload.tools;
             response = await fetch(url, {
@@ -318,7 +390,7 @@ Core Personality & Capabilities:
         return replyText || 'I could not generate a response.';
     }
 
-    // 2. Groq Fallback (Llama 3.3 70B)
+    // 3. Groq Fallback
     if (groqKey) {
         const messages = [{ role: 'system', content: systemInstructionText }];
         for (const h of history) {
@@ -337,33 +409,6 @@ Core Personality & Capabilities:
             },
             body: JSON.stringify({
                 model: 'llama-3.3-70b-versatile',
-                messages: messages,
-                max_tokens: 1000
-            })
-        });
-        const data = await res.json();
-        return data.choices?.[0]?.message?.content || 'I could not generate a response.';
-    }
-
-    // 3. OpenRouter Fallback
-    if (openrouterKey) {
-        const messages = [{ role: 'system', content: systemInstructionText }];
-        for (const h of history) {
-            messages.push({
-                role: h.role === 'model' ? 'assistant' : 'user',
-                content: h.role === 'user' ? `[${h.name}]: ${h.text}` : h.text
-            });
-        }
-        messages.push({ role: 'user', content: prompt });
-
-        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${openrouterKey}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                model: 'meta-llama/llama-3.3-70b-instruct:free',
                 messages: messages,
                 max_tokens: 1000
             })
