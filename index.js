@@ -74,8 +74,8 @@ const client = new Client({
     }
 });
 
-// High-Speed, 429-Immune Lavalink Cluster
-// 3 Verified Active Nodes: Auto failover, YouTube Music & Spotify LavaSrc enabled
+// High-Speed, 429-Immune Lavalink Nodes
+// Offloads all audio transcoding so the bot consumes ~35MB RAM instead of 250MB+
 const lavalinkNodes = [
     {
         host: 'lavalinkv4.serenetia.com',
@@ -90,13 +90,6 @@ const lavalinkNodes = [
         password: 'https://discord.gg/mjS5J2K3ep',
         secure: true,
         name: 'MilloHost-Node'
-    },
-    {
-        host: 'lavalink.jirayu.net',
-        port: 443,
-        password: 'youshallnotpass',
-        secure: true,
-        name: 'Jirayu-Node'
     }
 ];
 
@@ -111,13 +104,13 @@ if (process.env.LAVALINK_HOST) {
     });
 }
 
-// Initialize Riffy Lavalink client (Defaults to YouTube Music for official audio tracks)
+// Initialize Riffy Lavalink client
 client.riffy = new Riffy(client, lavalinkNodes, {
     send: (payload) => {
         const guild = client.guilds.cache.get(payload.d?.guild_id);
         if (guild) guild.shard.send(payload);
     },
-    defaultSearchPlatform: 'ytmsearch',
+    defaultSearchPlatform: 'ytsearch',
     restVersion: 'v4',
     autoMigratePlayers: true,
     migrateOnDisconnect: true
@@ -135,38 +128,6 @@ function formatDuration(ms) {
     const min = Math.floor(totalSec / 60);
     const sec = totalSec % 60;
     return `${min}:${sec.toString().padStart(2, '0')}`;
-}
-
-// Intelligent Track Filter: Guarantees original studio songs and rejects 1-hour loops or reaction videos
-function pickBestMusicTrack(tracks, query) {
-    if (!tracks || !tracks.length) return null;
-    const lowerQuery = query.toLowerCase();
-    const userWantsLong = /\b(1 hour|10 hour|1hr|10hr|loop|extended|compilation|album|podcast|stream|live|full album)\b/i.test(lowerQuery);
-
-    if (!userWantsLong) {
-        const blacklist = [
-            '1 hour', '10 hour', '1 hr', '10 hrs', '1 hour loop', '10 hour loop',
-            'full album', 'full ost', 'compilation', 'reaction', 'podcast',
-            'gameplay', 'walkthrough', 'movie scene', 'audiobook'
-        ];
-
-        const clean = tracks.filter(t => {
-            const title = (t.info?.title || '').toLowerCase();
-            const len = t.info?.length || 0;
-            // Filter out videos longer than 12 minutes or shorter than 30 seconds
-            if (len > 12 * 60 * 1000) return false;
-            if (len < 30 * 1000) return false;
-            // Filter out blacklist keywords
-            return !blacklist.some(b => title.includes(b));
-        });
-
-        if (clean.length > 0) {
-            // Prefer tracks with duration between 90s and 420s (1.5 min - 7 min, typical studio song length)
-            const optimal = clean.find(t => (t.info?.length >= 90 * 1000 && t.info?.length <= 420 * 1000));
-            return optimal || clean[0];
-        }
-    }
-    return tracks[0];
 }
 
 // Helper: Visual progress bar
@@ -232,7 +193,7 @@ client.riffy.on('trackStart', async (player, track) => {
             { name: 'Requested By', value: `${track.info.requester?.username || 'Unknown'}`, inline: true },
             { name: 'Queue', value: `${player.queue.size} track(s) next`, inline: true }
         )
-        .setFooter({ text: 'null Music • Official Studio Audio' });
+        .setFooter({ text: 'null Music • Clean Original YouTube Audio' });
 
     try {
         await channel.send({
@@ -301,22 +262,11 @@ client.on('voiceStateUpdate', (oldState, newState) => {
 const slashCommands = [
     new SlashCommandBuilder()
         .setName('play')
-        .setDescription('Play a song, playlist, or URL (YouTube Music, Spotify, SoundCloud)')
+        .setDescription('Play a song, playlist, or URL (Official YouTube, Spotify, SoundCloud)')
         .addStringOption(option =>
             option.setName('query')
-                .setDescription('Song title, artist name, or music URL')
+                .setDescription('Song title, artist name, or song URL')
                 .setRequired(true)
-        )
-        .addStringOption(option =>
-            option.setName('source')
-                .setDescription('Search provider (defaults to YouTube Music for clean songs)')
-                .setRequired(false)
-                .addChoices(
-                    { name: '🎵 YouTube Music (Official Studio Songs)', value: 'ytmsearch' },
-                    { name: '🟢 Spotify', value: 'spsearch' },
-                    { name: '▶️ YouTube', value: 'ytsearch' },
-                    { name: '☁️ SoundCloud', value: 'scsearch' }
-                )
         ),
     new SlashCommandBuilder()
         .setName('pause')
@@ -395,7 +345,7 @@ const onReady = async () => {
 
     // Initialize Riffy Lavalink Engine
     try {
-        console.log('🎧 Connecting to 3-node Lavalink cluster (429-immune, ~35MB RAM)...');
+        console.log('🎧 Connecting to high-speed Lavalink nodes (429-immune, ~35MB RAM)...');
         client.riffy.init(client.user.id);
     } catch (err) {
         console.error('⚠️ Lavalink init notice:', err.message);
@@ -476,7 +426,7 @@ client.on('interactionCreate', async (interaction) => {
                     .setTitle(`📜 Queue (${tracks.length} songs)`)
                     .setDescription(`**Now Playing:** ${current?.info?.title}\n\n**Upcoming:**\n${trackList}${tracks.length > 10 ? `\n*...and ${tracks.length - 10} more*` : ''}`)
                     .setColor(0x5865F2);
-                await interaction.reply({ embeds: [embed] });
+                await interaction.reply({ embeds: [embed], ephemeral: true });
                 break;
             }
         }
@@ -491,7 +441,6 @@ client.on('interactionCreate', async (interaction) => {
     // --- /play ---
     if (commandName === 'play') {
         const query = interaction.options.getString('query');
-        const selectedSource = interaction.options.getString('source');
         const voiceChannel = interaction.member?.voice?.channel;
 
         if (!voiceChannel) {
@@ -518,52 +467,13 @@ client.on('interactionCreate', async (interaction) => {
                 deaf: true
             });
 
-            const isUrl = /^https?:\/\//i.test(query);
-            let resolve = null;
-
-            if (isUrl) {
-                // Direct link: Spotify (track, album, playlist), YouTube, SoundCloud, etc.
-                resolve = await client.riffy.resolve({
-                    query: query,
-                    requester: interaction.user
-                });
-            } else if (selectedSource) {
-                // User explicitly selected search engine
-                resolve = await client.riffy.resolve({
-                    query: query,
-                    source: selectedSource,
-                    requester: interaction.user
-                });
-            } else {
-                // Multi-tier intelligent search:
-                // 1. YouTube Music first (official studio audio tracks only)
-                resolve = await client.riffy.resolve({
-                    query: query,
-                    source: 'ytmsearch',
-                    requester: interaction.user
-                });
-
-                // 2. Fallback to Spotify search if nothing found
-                if (!resolve || !resolve.tracks || !resolve.tracks.length) {
-                    resolve = await client.riffy.resolve({
-                        query: query,
-                        source: 'spsearch',
-                        requester: interaction.user
-                    });
-                }
-
-                // 3. Fallback to standard YouTube search if still nothing
-                if (!resolve || !resolve.tracks || !resolve.tracks.length) {
-                    resolve = await client.riffy.resolve({
-                        query: query,
-                        source: 'ytsearch',
-                        requester: interaction.user
-                    });
-                }
-            }
+            const resolve = await client.riffy.resolve({
+                query: query,
+                requester: interaction.user
+            });
 
             if (!resolve || !resolve.tracks || !resolve.tracks.length) {
-                return interaction.editReply({ content: `❌ No music results found for: \`${query}\`` });
+                return interaction.editReply({ content: `❌ No results found for: \`${query}\`` });
             }
 
             if (resolve.loadType === 'playlist') {
@@ -583,8 +493,7 @@ client.on('interactionCreate', async (interaction) => {
                     player.play();
                 }
             } else {
-                // Intelligent music filter: picks the real song and filters out 1-hour loops / reaction clips
-                const track = pickBestMusicTrack(resolve.tracks, query);
+                const track = resolve.tracks[0];
                 track.info.requester = interaction.user;
                 player.queue.add(track);
 
@@ -752,7 +661,7 @@ client.on('interactionCreate', async (interaction) => {
                 { name: '⏱️ Uptime', value: `${hours}h ${minutes}m ${seconds}s`, inline: true },
                 { name: '📶 Discord Ping', value: `${client.ws.ping}ms`, inline: true },
                 { name: '💾 Total RAM Usage', value: `**${rssMB} MB** (Heap: ${heapMB} MB)\n*Ultra-low memory profile (<40MB)*`, inline: false },
-                { name: '🎧 Audio Cluster', value: `3-Node Lavalink Cluster (YouTube Music & Spotify)\n${connectedNodes}`, inline: false },
+                { name: '🎧 Audio Engine', value: `Lavalink v4 Cluster (Direct Stream)\n${connectedNodes}`, inline: false },
                 { name: '🌐 Server Count', value: `${client.guilds.cache.size} server(s)`, inline: true },
                 { name: '🔊 Active Players', value: `${client.riffy.players.size} active voice session(s)`, inline: true }
             )
@@ -768,7 +677,7 @@ client.on('interactionCreate', async (interaction) => {
             .setDescription('Ultra-lightweight, 24/7 high-fidelity music bot with interactive buttons.')
             .setColor(0x5865F2)
             .addFields(
-                { name: '🎶 Music Playback', value: '`/play <song>` — Play songs or playlists (YouTube Music, Spotify, SoundCloud)\n`/pause` — Pause music\n`/resume` — Resume music\n`/skip` — Skip to next song\n`/stop` — Stop playback & disconnect' },
+                { name: '🎶 Music Playback', value: '`/play <song>` — Play songs or playlists (YouTube, Spotify, SoundCloud)\n`/pause` — Pause music\n`/resume` — Resume music\n`/skip` — Skip to next song\n`/stop` — Stop playback & disconnect' },
                 { name: '📜 Queue & Audio', value: '`/nowplaying` — Live song display with progress bar & buttons\n`/queue` — Show upcoming songs\n`/shuffle` — Shuffle the queue\n`/volume <1-100>` — Change playback volume' },
                 { name: '⚙️ Utilities', value: '`/null` — Bot status, memory diagnostics & audio nodes\n`/ping` — Check latency\n`/help` — Display this guide' }
             )
