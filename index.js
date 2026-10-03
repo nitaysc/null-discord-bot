@@ -90,13 +90,6 @@ const lavalinkNodes = [
         password: 'https://discord.gg/mjS5J2K3ep',
         secure: true,
         name: 'MilloHost-Node'
-    },
-    {
-        host: 'lavalink-v4.triniumhost.com',
-        port: 443,
-        password: 'free',
-        secure: true,
-        name: 'TriniumHost-Node'
     }
 ];
 
@@ -369,7 +362,6 @@ const onReady = async () => {
 };
 
 client.once('clientReady', onReady);
-client.once('ready', onReady);
 
 // Handle Interactions
 client.on('interactionCreate', async (interaction) => {
