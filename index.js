@@ -36,20 +36,21 @@ if (!TOKEN || TOKEN === 'your_bot_token_here') {
     process.exit(1);
 }
 
-// Low-Memory Discord Client: Strips all unneeded caches to stay < 40MB RAM
+// Low-Memory Discord Client: Strips unneeded caches to maintain ~35MB RAM
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildVoiceStates,
         GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildMembers
     ],
     makeCache: Options.cacheWithLimits({
         ApplicationCommandManager: 0,
         BaseGuildEmojiManager: 0,
         GuildBanManager: 0,
         GuildInviteManager: 0,
-        GuildMemberManager: 10,
+        GuildMemberManager: 50,
         GuildStickerManager: 0,
         GuildScheduledEventManager: 0,
         MessageManager: 0,
@@ -59,8 +60,8 @@ const client = new Client({
         StageInstanceManager: 0,
         ThreadManager: 0,
         ThreadMemberManager: 0,
-        UserManager: 10,
-        VoiceStateManager: 30
+        UserManager: 20,
+        VoiceStateManager: 25
     }),
     sweepers: {
         messages: {
@@ -75,7 +76,6 @@ const client = new Client({
 });
 
 // High-Speed, 429-Immune Lavalink Nodes
-// Offloads all audio transcoding so the bot consumes ~35MB RAM instead of 250MB+
 const lavalinkNodes = [
     {
         host: 'lavalinkv4.serenetia.com',
@@ -121,7 +121,264 @@ client.on('raw', (packet) => {
     client.riffy.updateVoiceState(packet);
 });
 
-// Format duration helper
+// ==========================================
+// 🧠 AI BRAIN ENGINE & CONVERSATION MEMORY
+// ==========================================
+
+// Lightweight In-Memory Channel Conversation History (Max 50 messages)
+// Map<channelId, Array<{ role: 'user' | 'model', text: string, name: string, timestamp: number }>>
+const conversationHistories = new Map();
+
+function addMessageToHistory(channelId, role, text, name) {
+    if (!conversationHistories.has(channelId)) {
+        conversationHistories.set(channelId, []);
+    }
+    const history = conversationHistories.get(channelId);
+    history.push({
+        role,
+        text: text.slice(0, 1500),
+        name: name || (role === 'model' ? 'null' : 'User'),
+        timestamp: Date.now()
+    });
+    if (history.length > 50) {
+        history.shift();
+    }
+}
+
+// Prune inactive channel histories every 5 minutes to keep RAM < 40MB
+setInterval(() => {
+    const now = Date.now();
+    for (const [chId, hist] of conversationHistories.entries()) {
+        const lastMsg = hist[hist.length - 1];
+        if (!lastMsg || (now - lastMsg.timestamp > 2 * 60 * 60 * 1000)) {
+            conversationHistories.delete(chId);
+        }
+    }
+    if (gc) { try { gc(); } catch {} }
+}, 300000);
+
+// Helper: Inspect server context, members, and roles for the AI
+function buildServerContext(message) {
+    if (!message.guild) return 'Context: Direct Message with User.';
+
+    const guild = message.guild;
+    const author = message.author;
+    const member = message.member;
+
+    // Speaker's roles
+    const authorRoles = member?.roles?.cache
+        .filter(r => r.name !== '@everyone')
+        .map(r => r.name)
+        .join(', ') || 'None';
+
+    // Server roles summary
+    const serverRoles = guild.roles.cache
+        .filter(r => r.name !== '@everyone')
+        .map(r => r.name)
+        .slice(0, 30)
+        .join(', ');
+
+    // Mentioned users info
+    let mentionedUsers = '';
+    if (message.mentions.members && message.mentions.members.size > 0) {
+        const list = message.mentions.members
+            .filter(m => m.id !== client.user.id)
+            .map(m => {
+                const r = m.roles.cache.filter(role => role.name !== '@everyone').map(role => role.name).join(', ') || 'None';
+                return `- User: ${m.user.username} (Nickname: ${m.displayName}, ID: ${m.id}), Roles: [${r}], Joined: ${m.joinedAt?.toDateString() || 'Unknown'}`;
+            });
+        if (list.length > 0) {
+            mentionedUsers = `\nMentioned Users in Message:\n${list.join('\n')}`;
+        }
+    }
+
+    // Cached members sample
+    const membersSample = guild.members.cache
+        .filter(m => !m.user.bot)
+        .map(m => {
+            const r = m.roles.cache.filter(role => role.name !== '@everyone').map(role => role.name).join(', ') || 'None';
+            return `${m.displayName} (@${m.user.username}, Roles: [${r}])`;
+        })
+        .slice(0, 30)
+        .join('; ');
+
+    return `Discord Server Context:
+- Server Name: "${guild.name}" (ID: ${guild.id})
+- Owner ID: <@${guild.ownerId}>
+- Total Members: ${guild.memberCount}
+- Server Roles: [${serverRoles || 'None'}]
+- Current Channel: #${message.channel.name || 'chat'} (ID: ${message.channel.id})
+- Current Speaker: ${member?.displayName || author.username} (@${author.tag}, ID: ${author.id})
+- Speaker Roles: [${authorRoles}]
+- Speaker Joined Server: ${member?.joinedAt?.toDateString() || 'Unknown'}
+- Speaker Account Created: ${author.createdAt.toDateString()}
+${mentionedUsers}
+- Server Members (sample): ${membersSample || 'None'}`;
+}
+
+// Helper: Split long Discord responses into chunks <= 1950 characters
+function splitDiscordMessage(text, maxLen = 1950) {
+    if (text.length <= maxLen) return [text];
+    const chunks = [];
+    let current = '';
+    for (const line of text.split('\n')) {
+        if ((current + '\n' + line).length > maxLen) {
+            if (current) chunks.push(current);
+            current = line;
+        } else {
+            current = current ? current + '\n' + line : line;
+        }
+    }
+    if (current) chunks.push(current);
+    return chunks;
+}
+
+// Query AI Providers (Gemini 2.0 Flash with Google Search grounding, Groq, or OpenRouter)
+async function generateAIResponse(prompt, channelId, serverContext) {
+    const geminiKey = process.env.GEMINI_API_KEY?.trim();
+    const groqKey = process.env.GROQ_API_KEY?.trim();
+    const openrouterKey = process.env.OPENROUTER_API_KEY?.trim();
+
+    if (!geminiKey && !groqKey && !openrouterKey) {
+        return `👋 **Hey! My AI brain is ready, but I need a free AI token to activate my thoughts!**
+
+🔑 **Get a 100% free Gemini API key in 30 seconds** (no credit card needed):
+1. Go to **https://aistudio.google.com/app/apikey**
+2. Click **Create API key**
+3. Copy your key
+4. In your **bot-hosting.net** panel:
+   - Open \`.env\` in **File Manager** (or Environment Variables)
+   - Add: \`GEMINI_API_KEY=your_key_here\`
+   - Click **Save** and **Restart**!
+
+🌐 *Once added, I will have live internet web access (Google Search), remember 50 messages of chat history, and know server members & roles!*`;
+    }
+
+    const history = conversationHistories.get(channelId) || [];
+
+    const systemInstructionText = `You are "null", an advanced, witty, highly intelligent, and helpful AI assistant living inside a Discord server.
+${serverContext}
+
+Core Personality & Capabilities:
+- You have pair-programming capabilities, deep technical knowledge, and sharp conversational skills.
+- You have live internet access to search the web and check current facts, news, and real-time information whenever asked or needed.
+- You remember the previous 50 messages of conversation in this channel.
+- You can see members, their roles, server information, and details about who is speaking to you.
+- Answer helpfully, naturally, and concisely for Discord chat. Use code blocks for code and bold for emphasis.
+- Do not mention that you are a system prompt; just talk naturally as null.`;
+
+    // 1. Google Gemini (Recommended - Native live Google Search Grounding)
+    if (geminiKey) {
+        const contents = [];
+        for (const h of history) {
+            contents.push({
+                role: h.role === 'model' ? 'model' : 'user',
+                parts: [{ text: h.role === 'user' ? `[${h.name}]: ${h.text}` : h.text }]
+            });
+        }
+        contents.push({
+            role: 'user',
+            parts: [{ text: prompt }]
+        });
+
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`;
+        const payload = {
+            systemInstruction: { parts: [{ text: systemInstructionText }] },
+            contents: contents,
+            tools: [{ googleSearch: {} }],
+            generationConfig: {
+                temperature: 0.7,
+                maxOutputTokens: 1000
+            }
+        };
+
+        let response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        // Fallback without tools if googleSearch tool is restricted on key
+        if (!response.ok) {
+            delete payload.tools;
+            response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+        }
+
+        if (!response.ok) {
+            const errData = await response.json().catch(() => ({}));
+            throw new Error(errData.error?.message || `Gemini API error (${response.status})`);
+        }
+
+        const data = await response.json();
+        const replyText = data.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
+        return replyText || 'I could not generate a response.';
+    }
+
+    // 2. Groq Fallback (Llama 3.3 70B)
+    if (groqKey) {
+        const messages = [{ role: 'system', content: systemInstructionText }];
+        for (const h of history) {
+            messages.push({
+                role: h.role === 'model' ? 'assistant' : 'user',
+                content: h.role === 'user' ? `[${h.name}]: ${h.text}` : h.text
+            });
+        }
+        messages.push({ role: 'user', content: prompt });
+
+        const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${groqKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: 'llama-3.3-70b-versatile',
+                messages: messages,
+                max_tokens: 1000
+            })
+        });
+        const data = await res.json();
+        return data.choices?.[0]?.message?.content || 'I could not generate a response.';
+    }
+
+    // 3. OpenRouter Fallback
+    if (openrouterKey) {
+        const messages = [{ role: 'system', content: systemInstructionText }];
+        for (const h of history) {
+            messages.push({
+                role: h.role === 'model' ? 'assistant' : 'user',
+                content: h.role === 'user' ? `[${h.name}]: ${h.text}` : h.text
+            });
+        }
+        messages.push({ role: 'user', content: prompt });
+
+        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${openrouterKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: 'meta-llama/llama-3.3-70b-instruct:free',
+                messages: messages,
+                max_tokens: 1000
+            })
+        });
+        const data = await res.json();
+        return data.choices?.[0]?.message?.content || 'I could not generate a response.';
+    }
+
+    return 'No AI provider configured.';
+}
+
+// ==========================================
+// 🎵 MUSIC HELPERS & CONTROLS
+// ==========================================
+
 function formatDuration(ms) {
     if (!ms || ms === 0) return 'Live';
     const totalSec = Math.floor(ms / 1000);
@@ -130,7 +387,6 @@ function formatDuration(ms) {
     return `${min}:${sec.toString().padStart(2, '0')}`;
 }
 
-// Helper: Visual progress bar
 function createProgressBar(currentMs, totalMs, length = 12) {
     if (!totalMs || totalMs === 0) return '🔘' + '▬'.repeat(length);
     const progress = Math.min(Math.max(currentMs / totalMs, 0), 1);
@@ -139,7 +395,6 @@ function createProgressBar(currentMs, totalMs, length = 12) {
     return '▬'.repeat(progressChars) + '🔘' + '▬'.repeat(emptyChars);
 }
 
-// Interactive button controls like Luna / Lara bot
 function createMusicControlButtons(isPaused = false) {
     return new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -193,7 +448,7 @@ client.riffy.on('trackStart', async (player, track) => {
             { name: 'Requested By', value: `${track.info.requester?.username || 'Unknown'}`, inline: true },
             { name: 'Queue', value: `${player.queue.size} track(s) next`, inline: true }
         )
-        .setFooter({ text: 'null Music • Clean Original YouTube Audio' });
+        .setFooter({ text: 'null Music • Clean Audio' });
 
     try {
         await channel.send({
@@ -262,10 +517,18 @@ client.on('voiceStateUpdate', (oldState, newState) => {
 const slashCommands = [
     new SlashCommandBuilder()
         .setName('play')
-        .setDescription('Play a song, playlist, or URL (Official YouTube, Spotify, SoundCloud)')
+        .setDescription('Play a song, playlist, or URL (YouTube, Spotify, SoundCloud)')
         .addStringOption(option =>
             option.setName('query')
                 .setDescription('Song title, artist name, or song URL')
+                .setRequired(true)
+        ),
+    new SlashCommandBuilder()
+        .setName('ask')
+        .setDescription('Ask the null AI brain anything (web search & reasoning enabled)')
+        .addStringOption(option =>
+            option.setName('question')
+                .setDescription('What do you want to ask null?')
                 .setRequired(true)
         ),
     new SlashCommandBuilder()
@@ -304,7 +567,7 @@ const slashCommands = [
         .setDescription('Check bot and API latency'),
     new SlashCommandBuilder()
         .setName('null')
-        .setDescription('View bot status, RAM memory usage, uptime, and Lavalink status'),
+        .setDescription('View bot status, RAM memory usage, AI brain, and Lavalink status'),
     new SlashCommandBuilder()
         .setName('help')
         .setDescription('Show all commands and features')
@@ -323,7 +586,7 @@ const onReady = async () => {
     console.log('======================================================');
 
     // Set online presence
-    const activityName = process.env.BOT_STATUS || 'null • /play';
+    const activityName = process.env.BOT_STATUS || 'null • @null to chat';
     try {
         client.user.setPresence({
             activities: [
@@ -363,7 +626,76 @@ const onReady = async () => {
 
 client.once('clientReady', onReady);
 
-// Handle Interactions
+// ==========================================
+// 💬 CHAT & MENTION AI TRIGGER
+// ==========================================
+client.on('messageCreate', async (message) => {
+    if (message.author.bot) return;
+
+    // Check if bot was mentioned (@null)
+    const isMentioned = message.mentions.users.has(client.user.id) && !message.mentions.everyone && !message.content.includes('@here');
+
+    // Check if user replied to null's previous message
+    let isReplyToBot = false;
+    if (message.reference && message.reference.messageId) {
+        try {
+            const repliedMessage = await message.channel.messages.fetch(message.reference.messageId).catch(() => null);
+            if (repliedMessage && repliedMessage.author.id === client.user.id) {
+                isReplyToBot = true;
+            }
+        } catch {}
+    }
+
+    // Allow DMs as well
+    const isDM = !message.guild;
+
+    if (!isMentioned && !isReplyToBot && !isDM) return;
+
+    // Remove @mention from prompt text
+    const botMentionRegex = new RegExp(`<@!?${client.user.id}>`, 'g');
+    const cleanPrompt = message.content.replace(botMentionRegex, '').trim() || 'Hello!';
+
+    const speakerName = message.member?.displayName || message.author.username;
+
+    // Show typing status in Discord
+    try {
+        await message.channel.sendTyping();
+    } catch {}
+
+    try {
+        // Fetch a small batch of guild members to ensure member context is fresh
+        if (message.guild && message.guild.members.cache.size < 20) {
+            await message.guild.members.fetch({ limit: 50 }).catch(() => {});
+        }
+
+        const serverContext = buildServerContext(message);
+
+        // Generate AI response
+        const aiReply = await generateAIResponse(cleanPrompt, message.channel.id, serverContext);
+
+        // Store user message & bot reply in 50-message conversational memory
+        addMessageToHistory(message.channel.id, 'user', cleanPrompt, speakerName);
+        addMessageToHistory(message.channel.id, 'model', aiReply, 'null');
+
+        // Split message if > 1950 characters
+        const chunks = splitDiscordMessage(aiReply);
+        for (let i = 0; i < chunks.length; i++) {
+            if (i === 0) {
+                await message.reply({ content: chunks[i], allowedMentions: { repliedUser: false } });
+            } else {
+                await message.channel.send({ content: chunks[i] });
+            }
+        }
+    } catch (err) {
+        console.error('AI chat error:', err.message);
+        await message.reply({
+            content: `⚠️ Oops, I encountered an issue thinking about that: \`${err.message}\``,
+            allowedMentions: { repliedUser: false }
+        }).catch(() => {});
+    }
+});
+
+// Handle Slash Command & Button Interactions
 client.on('interactionCreate', async (interaction) => {
     // 1. Button Controls
     if (interaction.isButton()) {
@@ -437,6 +769,28 @@ client.on('interactionCreate', async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
 
     const { commandName } = interaction;
+
+    // --- /ask ---
+    if (commandName === 'ask') {
+        const question = interaction.options.getString('question');
+        await interaction.deferReply();
+
+        try {
+            const serverContext = buildServerContext(interaction);
+            const aiReply = await generateAIResponse(question, interaction.channelId, serverContext);
+
+            addMessageToHistory(interaction.channelId, 'user', question, interaction.user.username);
+            addMessageToHistory(interaction.channelId, 'model', aiReply, 'null');
+
+            const chunks = splitDiscordMessage(aiReply);
+            await interaction.editReply({ content: chunks[0] });
+            for (let i = 1; i < chunks.length; i++) {
+                await interaction.channel.send({ content: chunks[i] });
+            }
+        } catch (err) {
+            await interaction.editReply({ content: `⚠️ AI error: ${err.message}` });
+        }
+    }
 
     // --- /play ---
     if (commandName === 'play') {
@@ -652,16 +1006,21 @@ client.on('interactionCreate', async (interaction) => {
 
         const connectedNodes = client.riffy.leastUsedNodes.map(n => `🟢 ${n.name}`).join('\n') || '⚠️ Reconnecting...';
 
+        const aiStatus = (process.env.GEMINI_API_KEY || process.env.GROQ_API_KEY || process.env.OPENROUTER_API_KEY)
+            ? '🟢 Active (Web Search & 50 Memory Enabled)'
+            : '🟡 Waiting for Key (Add GEMINI_API_KEY in .env)';
+
         const embed = new EmbedBuilder()
-            .setTitle('⚙️ null — System & Music Engine Status')
+            .setTitle('⚙️ null — System, Music & AI Brain Status')
             .setColor(0x5865F2)
             .setThumbnail(client.user.displayAvatarURL())
             .addFields(
                 { name: '🤖 Bot Status', value: 'ONLINE 24/7', inline: true },
                 { name: '⏱️ Uptime', value: `${hours}h ${minutes}m ${seconds}s`, inline: true },
                 { name: '📶 Discord Ping', value: `${client.ws.ping}ms`, inline: true },
+                { name: '🧠 AI Brain', value: `${aiStatus}\n*Mention @null or reply to messages to talk!*`, inline: false },
                 { name: '💾 Total RAM Usage', value: `**${rssMB} MB** (Heap: ${heapMB} MB)\n*Ultra-low memory profile (<40MB)*`, inline: false },
-                { name: '🎧 Audio Engine', value: `Lavalink v4 Cluster (Direct Stream)\n${connectedNodes}`, inline: false },
+                { name: '🎧 Audio Cluster', value: `Lavalink v4 Cluster\n${connectedNodes}`, inline: false },
                 { name: '🌐 Server Count', value: `${client.guilds.cache.size} server(s)`, inline: true },
                 { name: '🔊 Active Players', value: `${client.riffy.players.size} active voice session(s)`, inline: true }
             )
@@ -674,12 +1033,13 @@ client.on('interactionCreate', async (interaction) => {
     if (commandName === 'help') {
         const embed = new EmbedBuilder()
             .setTitle('📖 null Bot — Commands Guide')
-            .setDescription('Ultra-lightweight, 24/7 high-fidelity music bot with interactive buttons.')
+            .setDescription('Ultra-lightweight, 24/7 high-fidelity music bot with interactive buttons and an AI brain.')
             .setColor(0x5865F2)
             .addFields(
+                { name: '🧠 AI Chat & Web Search', value: '• **Mention `@null`** in any channel to chat!\n• **Reply to null\'s messages** to continue the conversation!\n• `/ask <question>` — Ask the AI with live Google Search!\n• Remembers **50 messages** of history and knows server members & roles!' },
                 { name: '🎶 Music Playback', value: '`/play <song>` — Play songs or playlists (YouTube, Spotify, SoundCloud)\n`/pause` — Pause music\n`/resume` — Resume music\n`/skip` — Skip to next song\n`/stop` — Stop playback & disconnect' },
                 { name: '📜 Queue & Audio', value: '`/nowplaying` — Live song display with progress bar & buttons\n`/queue` — Show upcoming songs\n`/shuffle` — Shuffle the queue\n`/volume <1-100>` — Change playback volume' },
-                { name: '⚙️ Utilities', value: '`/null` — Bot status, memory diagnostics & audio nodes\n`/ping` — Check latency\n`/help` — Display this guide' }
+                { name: '⚙️ Utilities', value: '`/null` — Bot status, memory diagnostics & AI brain info\n`/ping` — Check latency\n`/help` — Display this guide' }
             )
             .setFooter({ text: 'null Music • Interactive Controls Available on Playback' });
 
