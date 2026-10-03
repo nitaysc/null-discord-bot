@@ -13,6 +13,21 @@ const { Player, useQueue, useMainPlayer } = require('discord-player');
 const { DefaultExtractors } = require('@discord-player/extractor');
 const { YoutubeExtractor } = require('discord-player-youtubei');
 
+// Ensure FFmpeg binary exists (handles npm 12 allowScripts restrictions on hosting platforms)
+try {
+    const ffmpegPath = require('ffmpeg-static');
+    const fs = require('fs');
+    if (!ffmpegPath || !fs.existsSync(ffmpegPath)) {
+        console.log('📦 FFmpeg binary is missing. Downloading FFmpeg now...');
+        const cp = require('child_process');
+        const installer = require.resolve('ffmpeg-static/install.js');
+        cp.execSync(`node "${installer}"`, { stdio: 'inherit' });
+        console.log('✅ FFmpeg binary downloaded successfully!');
+    }
+} catch (err) {
+    console.warn('⚠️ FFmpeg verification note:', err.message);
+}
+
 // Validate Discord Token
 const TOKEN = process.env.DISCORD_TOKEN?.trim();
 if (!TOKEN || TOKEN === 'your_bot_token_here') {

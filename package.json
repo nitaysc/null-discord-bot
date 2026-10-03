@@ -6,6 +6,10 @@
   "scripts": {
     "start": "node index.js"
   },
+  "allowScripts": {
+    "ffmpeg-static": true,
+    "esbuild": true
+  },
   "keywords": [
     "discord",
     "bot",
@@ -23,6 +27,7 @@
     "dotenv": "^18.0.5",
     "ffmpeg-static": "^5.3.0",
     "mediaplex": "^1.0.0",
+    "opusscript": "^0.0.8",
     "simple-ytdl-core": "^1.1.1"
   }
 }
