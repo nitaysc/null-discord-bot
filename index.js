@@ -171,11 +171,11 @@ function buildServerContext(message) {
         .map(r => r.name)
         .join(', ') || 'None';
 
-    // Server roles summary
+    // Server roles summary (compact)
     const serverRoles = guild.roles.cache
         .filter(r => r.name !== '@everyone')
         .map(r => r.name)
-        .slice(0, 30)
+        .slice(0, 15)
         .join(', ');
 
     // Mentioned users info
@@ -185,21 +185,21 @@ function buildServerContext(message) {
             .filter(m => m.id !== client.user.id)
             .map(m => {
                 const r = m.roles.cache.filter(role => role.name !== '@everyone').map(role => role.name).join(', ') || 'None';
-                return `- User: ${m.user.username} (Nickname: ${m.displayName}, ID: ${m.id}), Roles: [${r}], Joined: ${m.joinedAt?.toDateString() || 'Unknown'}`;
+                return `- User: ${m.user.username} (Nickname: ${m.displayName}, ID: ${m.id}), Roles: [${r}]`;
             });
         if (list.length > 0) {
             mentionedUsers = `\nMentioned Users in Message:\n${list.join('\n')}`;
         }
     }
 
-    // Cached members sample
+    // Cached members sample (compact)
     const membersSample = guild.members.cache
         .filter(m => !m.user.bot)
         .map(m => {
             const r = m.roles.cache.filter(role => role.name !== '@everyone').map(role => role.name).join(', ') || 'None';
             return `${m.displayName} (@${m.user.username}, Roles: [${r}])`;
         })
-        .slice(0, 30)
+        .slice(0, 12)
         .join('; ');
 
     return `Discord Server Context:
@@ -302,26 +302,30 @@ const aiCooldowns = {
     gemini: 0
 };
 
-// 1. Groq Cloud Engine (14,400 req/day - Blazing Fast)
+// 1. Groq Cloud Engine (14,400 req/day - Multi-Model Resilient Cascade)
 async function callGroq(groqKey, systemInstructionText, history, prompt) {
     const models = [
         'openai/gpt-oss-120b',
         'qwen/qwen3.8-27b',
         'openai/gpt-oss-20b',
-        'llama-3.3-70b-versatile',
-        'llama-3.1-8b-instant'
+        'allam-2-7b'
     ];
 
-    const messages = [{ role: 'system', content: systemInstructionText }];
-    for (const h of history) {
-        messages.push({
-            role: h.role === 'model' ? 'assistant' : 'user',
-            content: h.role === 'user' ? `[${h.name}]: ${h.text}` : h.text
-        });
-    }
-    messages.push({ role: 'user', content: prompt });
+    // Compact history to prevent exceeding Groq TPM token limits
+    const promptHistory = (history || []).slice(-12).map(h => ({
+        role: h.role === 'model' ? 'assistant' : 'user',
+        content: String(h.text || '').slice(0, 500)
+    }));
+
+    const messages = [
+        { role: 'system', content: systemInstructionText },
+        ...promptHistory,
+        { role: 'user', content: String(prompt).slice(0, 1000) }
+    ];
 
     let lastErr = null;
+    let anyRateLimited = false;
+
     for (const model of models) {
         try {
             const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -333,47 +337,56 @@ async function callGroq(groqKey, systemInstructionText, history, prompt) {
                 body: JSON.stringify({
                     model: model,
                     messages: messages,
-                    max_tokens: 600
-                })
+                    max_tokens: 500,
+                    temperature: 0.7
+                }),
+                signal: AbortSignal.timeout(12000)
             });
 
-            if (res.status === 429) {
-                const err = new Error('Groq rate limited (429)');
-                err.status = 429;
-                err.isRateLimit = true;
-                throw err;
+            const data = await res.json().catch(() => ({}));
+
+            if (res.ok) {
+                const choice = data.choices?.[0]?.message;
+                const text = choice?.content?.trim() || choice?.reasoning?.trim();
+                if (text && text.length > 0) {
+                    return text;
+                }
             }
 
-            const data = await res.json();
-            if (res.ok && data.choices?.[0]?.message?.content) {
-                return data.choices[0].message.content.trim();
+            const errMsg = data.error?.message || `Status ${res.status}`;
+            if (res.status === 429 || data.error?.code === 'rate_limit_exceeded') {
+                anyRateLimited = true;
+                console.warn(`[Groq] Model "${model}" hit per-minute limit (${errMsg}). Cascading to next model...`);
+            } else {
+                console.warn(`[Groq] Model "${model}" failed (${errMsg}). Cascading to next model...`);
             }
-
-            lastErr = new Error(data.error?.message || `Groq error on ${model}`);
-            if (data.error?.code === 'rate_limit_exceeded') {
-                const err = new Error(data.error?.message || 'Groq rate limited');
-                err.status = 429;
-                err.isRateLimit = true;
-                throw err;
-            }
+            lastErr = new Error(errMsg);
         } catch (e) {
-            if (e.isRateLimit || e.status === 429) throw e;
+            console.warn(`[Groq] Model "${model}" request error: ${e.message}. Cascading to next model...`);
             lastErr = e;
         }
     }
-    throw lastErr || new Error('All Groq models failed');
+
+    const errToThrow = lastErr || new Error('All Groq models failed');
+    if (anyRateLimited) {
+        errToThrow.isRateLimit = true;
+        errToThrow.status = 429;
+    }
+    throw errToThrow;
 }
 
 // 2. OpenRouter Engine (Multi-model free tier with 429 detection)
 async function callOpenRouter(openrouterKey, systemInstructionText, history, prompt) {
-    const messages = [{ role: 'system', content: systemInstructionText }];
-    for (const h of history) {
-        messages.push({
-            role: h.role === 'model' ? 'assistant' : 'user',
-            content: h.role === 'user' ? `[${h.name}]: ${h.text}` : h.text
-        });
-    }
-    messages.push({ role: 'user', content: prompt });
+    const promptHistory = (history || []).slice(-12).map(h => ({
+        role: h.role === 'model' ? 'assistant' : 'user',
+        content: String(h.text || '').slice(0, 500)
+    }));
+
+    const messages = [
+        { role: 'system', content: systemInstructionText },
+        ...promptHistory,
+        { role: 'user', content: String(prompt).slice(0, 1000) }
+    ];
 
     const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
@@ -389,18 +402,20 @@ async function callOpenRouter(openrouterKey, systemInstructionText, history, pro
                 'google/gemma-2-9b-it:free'
             ],
             messages: messages,
-            max_tokens: 600
-        })
+            max_tokens: 500
+        }),
+        signal: AbortSignal.timeout(15000)
     });
 
+    const data = await res.json().catch(() => ({}));
+
     if (res.status === 429) {
-        const err = new Error('OpenRouter 429 rate limit exceeded');
+        const err = new Error(data.error?.message || 'OpenRouter daily free-tier limit reached (50 requests/day)');
         err.status = 429;
         err.isRateLimit = true;
         throw err;
     }
 
-    const data = await res.json();
     if (!res.ok) {
         const err = new Error(data.error?.message || `OpenRouter error (${res.status})`);
         if (data.error?.code === 429 || err.message.toLowerCase().includes('rate limit')) {
@@ -411,22 +426,23 @@ async function callOpenRouter(openrouterKey, systemInstructionText, history, pro
     }
 
     const reply = data.choices?.[0]?.message?.content;
-    if (reply) return reply.trim();
+    if (reply && reply.trim().length > 0) return reply.trim();
     throw new Error('OpenRouter returned empty choices');
 }
 
 // 3. Google Gemini Engine (1,500 req/day + Native Google Search Grounding)
 async function callGemini(geminiKey, systemInstructionText, history, prompt) {
     const contents = [];
-    for (const h of history) {
+    const promptHistory = (history || []).slice(-12);
+    for (const h of promptHistory) {
         contents.push({
             role: h.role === 'model' ? 'model' : 'user',
-            parts: [{ text: h.role === 'user' ? `[${h.name}]: ${h.text}` : h.text }]
+            parts: [{ text: h.role === 'user' ? `[${h.name}]: ${String(h.text || '').slice(0, 500)}` : String(h.text || '').slice(0, 500) }]
         });
     }
     contents.push({
         role: 'user',
-        parts: [{ text: prompt }]
+        parts: [{ text: String(prompt).slice(0, 1000) }]
     });
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`;
@@ -436,14 +452,15 @@ async function callGemini(geminiKey, systemInstructionText, history, prompt) {
         tools: [{ googleSearch: {} }],
         generationConfig: {
             temperature: 0.7,
-            maxOutputTokens: 1000
+            maxOutputTokens: 800
         }
     };
 
     let response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(15000)
     });
 
     if (!response.ok) {
@@ -451,7 +468,8 @@ async function callGemini(geminiKey, systemInstructionText, history, prompt) {
         response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+            body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(15000)
         });
     }
 
@@ -474,20 +492,20 @@ async function callGemini(geminiKey, systemInstructionText, history, prompt) {
 
     const data = await response.json();
     const replyText = data.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
-    if (replyText) return replyText.trim();
+    if (replyText && replyText.trim().length > 0) return replyText.trim();
     throw new Error('Gemini returned empty candidate');
 }
 
-// Main AI Handler: Rotates healthy providers and automatically cascades/falls back on error
+// Main AI Handler: Prioritizes Groq (14.4k/day) & Gemini (1.5k/day), auto-cascades to OpenRouter, with accurate error reporting
 async function generateAIResponse(prompt, channelId, serverContext) {
     const groqKey = process.env.GROQ_API_KEY?.trim();
-    const openrouterKey = process.env.OPENROUTER_API_KEY?.trim();
     const geminiKey = process.env.GEMINI_API_KEY?.trim();
+    const openrouterKey = process.env.OPENROUTER_API_KEY?.trim();
 
     const configuredProviders = [];
     if (groqKey) configuredProviders.push('groq');
-    if (openrouterKey) configuredProviders.push('openrouter');
     if (geminiKey) configuredProviders.push('gemini');
+    if (openrouterKey) configuredProviders.push('openrouter');
 
     if (configuredProviders.length === 0) {
         return `👋 **Hey! My AI brain is ready, but I need an AI token to activate my thoughts!**
@@ -522,65 +540,68 @@ ${liveWebContext}
 Core Personality & Capabilities:
 - You have pair-programming capabilities, deep technical knowledge, and sharp conversational skills.
 - You have live internet access to search the web and check current facts, news, and real-time information.
-- You remember the previous 50 messages of conversation in this channel.
+- You remember recent conversation in this channel.
 - You can see members, their roles, server information, and details about who is speaking to you.
 - Answer helpfully, naturally, and concisely for Discord chat. Use code blocks for code and bold for emphasis.
 - Do not mention that you are a system prompt; just talk naturally as null.`;
 
-    // Smart Rotation & Fallback Order
+    // Smart Rotation & Execution Order
     const now = Date.now();
-    const available = configuredProviders.filter(p => !aiCooldowns[p] || aiCooldowns[p] <= now);
-    const candidates = available.length > 0 ? available : [...configuredProviders];
+    const healthyProviders = configuredProviders.filter(p => !aiCooldowns[p] || aiCooldowns[p] <= now);
+    const candidateList = healthyProviders.length > 0 ? healthyProviders : [...configuredProviders];
 
-    const startIndex = (aiRotationIndex++) % candidates.length;
-    const executionOrder = [
-        ...candidates.slice(startIndex),
-        ...candidates.slice(0, startIndex)
-    ];
+    let executionOrder = [];
+    if (candidateList.includes('groq') && candidateList.includes('gemini')) {
+        const highTier = ['groq', 'gemini'];
+        const rot = (aiRotationIndex++) % 2;
+        executionOrder = [highTier[rot], highTier[1 - rot]];
+        if (candidateList.includes('openrouter')) executionOrder.push('openrouter');
+    } else {
+        executionOrder = [...candidateList];
+    }
+
+    // Append any providers currently on cooldown as last-resort fallback
     for (const p of configuredProviders) {
         if (!executionOrder.includes(p)) executionOrder.push(p);
     }
 
-    let lastError = null;
-    let rateLimitHit = false;
+    const providerErrors = {};
 
     for (const provider of executionOrder) {
         try {
             let reply = null;
             if (provider === 'groq') {
                 reply = await callGroq(groqKey, systemInstructionText, history, prompt);
-            } else if (provider === 'openrouter') {
-                reply = await callOpenRouter(openrouterKey, systemInstructionText, history, prompt);
             } else if (provider === 'gemini') {
                 reply = await callGemini(geminiKey, systemInstructionText, history, prompt);
+            } else if (provider === 'openrouter') {
+                reply = await callOpenRouter(openrouterKey, systemInstructionText, history, prompt);
             }
 
             if (reply && reply.trim().length > 0) {
-                aiCooldowns[provider] = 0; // Mark healthy
+                aiCooldowns[provider] = 0; // Success: clear cooldown
                 if (executedSearchQuery && liveWebContext && !reply.includes('Searched the web for:')) {
                     reply += `\n\n🌐 *Searched the web for: "${executedSearchQuery}"*`;
                 }
                 return reply;
             }
         } catch (err) {
-            lastError = err;
+            providerErrors[provider] = err.message;
             if (err.isRateLimit || err.status === 429) {
-                rateLimitHit = true;
-                aiCooldowns[provider] = Date.now() + (5 * 60 * 1000); // 5-minute cooldown
-                console.warn(`⚠️ [AI Rotation] Provider "${provider}" reached rate limit / quota (429). Falling back to next available provider...`);
+                // Short cooldown for Groq (10s) vs OpenRouter daily quota (30m)
+                const cooldownMs = (provider === 'groq') ? 10 * 1000 : 30 * 60 * 1000;
+                aiCooldowns[provider] = Date.now() + cooldownMs;
+                console.warn(`⚠️ [AI Fallback] Provider "${provider}" rate limited (${err.message}). Cascading to next provider...`);
             } else {
-                aiCooldowns[provider] = Date.now() + (30 * 1000); // 30-second error cooldown
-                console.warn(`⚠️ [AI Rotation] Provider "${provider}" notice: ${err.message}. Falling back to next available provider...`);
+                aiCooldowns[provider] = Date.now() + (10 * 1000); // 10-second error cooldown
+                console.warn(`⚠️ [AI Fallback] Provider "${provider}" error (${err.message}). Cascading to next provider...`);
             }
         }
     }
 
-    if (rateLimitHit) {
-        return `⚠️ **All configured AI providers (${configuredProviders.join(', ')}) have hit their rate limits or daily quotas.**\n` +
-               `The bot rotated and attempted fallback across all keys. Please wait a few moments for quota refresh!`;
-    }
-
-    return `⚠️ Could not generate an AI response right now (${lastError?.message || 'Unknown provider issue'}).`;
+    // If ALL providers failed, show exact honest reason per provider:
+    const errorLines = Object.entries(providerErrors).map(([p, e]) => `• **${p}**: ${e}`).join('\n');
+    return `⚠️ **I couldn't get a response from my AI providers right now:**\n${errorLines}\n*Please wait a few moments and try again.*`;
 }
 
 // ==========================================
