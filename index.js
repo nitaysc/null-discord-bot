@@ -300,6 +300,7 @@ function extractSearchQuery(prompt) {
 // Multi-Source Live Web Search (DuckDuckGo HTML + Google News RSS + Wikipedia)
 async function searchWeb(query) {
     const results = [];
+    const sources = [];
     const isHebrew = /[\u0590-\u05FF]/.test(query);
 
     // 1. DuckDuckGo Web Snippets (Fast real-time web results)
@@ -316,6 +317,7 @@ async function searchWeb(query) {
                 const snippet = m[1].replace(/<[^>]+>/g, '').replace(/&quot;/g, '"').replace(/&#x27;/g, "'").trim();
                 if (snippet) results.push(`- [Web Fact]: ${snippet}`);
             }
+            if (matches.length > 0) sources.push('חיפוש רשת');
         }
     } catch {}
 
@@ -328,9 +330,18 @@ async function searchWeb(query) {
         const newsRes = await fetch(newsUrl, { signal: AbortSignal.timeout(3500) });
         if (newsRes.ok) {
             const xml = await newsRes.text();
-            const items = [...xml.matchAll(/<title>([^<]+)<\/title>[\s\S]*?<pubDate>([^<]+)<\/pubDate>/g)].slice(1, 4);
-            for (const item of items) {
-                results.push(`- [Live News / Fact]: ${item[1]} (${item[2]})`);
+            const items = [...xml.matchAll(/<title>([^<]+)<\/title>[\s\S]*?<source[^>]*>([^<]+)<\/source>/g)].slice(0, 3);
+            if (items.length > 0) {
+                for (const item of items) {
+                    results.push(`- [Live News / Fact]: ${item[1]}`);
+                    if (item[2] && !sources.includes(item[2])) sources.push(item[2]);
+                }
+            } else {
+                const simpleTitles = [...xml.matchAll(/<title>([^<]+)<\/title>/g)].slice(1, 4);
+                for (const t of simpleTitles) {
+                    results.push(`- [Live News]: ${t[1]}`);
+                }
+                if (simpleTitles.length > 0) sources.push('חדשות Google');
             }
         }
     } catch {}
@@ -349,13 +360,17 @@ async function searchWeb(query) {
                     const sumData = await sumRes.json();
                     if (sumData.extract) {
                         results.push(`- [Wikipedia Summary - ${topTitle}]: ${sumData.extract}`);
+                        sources.push(`ויקיפדיה (${topTitle})`);
                     }
                 }
             }
         }
     } catch {}
 
-    return results.slice(0, 5).join('\n');
+    return {
+        text: results.slice(0, 5).join('\n'),
+        sources: [...new Set(sources)]
+    };
 }
 
 // ==========================================
@@ -369,12 +384,12 @@ const aiCooldowns = {
     gemini: 0
 };
 
-// 1. Groq Cloud Engine (14,400 req/day - Qwen 27B Primary + Never Leak Reasoning)
+// 1. Groq Cloud Engine (14,400 req/day - GPT-OSS 120B Flagship Intelligence)
 async function callGroq(groqKey, systemInstructionText, history, prompt) {
     const models = [
-        'qwen/qwen3.8-27b',
         'openai/gpt-oss-120b',
         'openai/gpt-oss-20b',
+        'qwen/qwen3.8-27b',
         'allam-2-7b'
     ];
 
@@ -404,10 +419,10 @@ async function callGroq(groqKey, systemInstructionText, history, prompt) {
                 body: JSON.stringify({
                     model: model,
                     messages: messages,
-                    max_tokens: 500,
+                    max_tokens: 1000,
                     temperature: 0.7
                 }),
-                signal: AbortSignal.timeout(12000)
+                signal: AbortSignal.timeout(15000)
             });
 
             const data = await res.json().catch(() => ({}));
@@ -592,28 +607,30 @@ In your **bot-hosting.net** panel:
 
     // Real-Time Web Search Trigger & Extraction (Smart Multilingual Classifier)
     let liveWebContext = '';
+    let searchSources = [];
     let executedSearchQuery = null;
 
     if (shouldSearchWeb(prompt)) {
         executedSearchQuery = extractSearchQuery(prompt);
         if (executedSearchQuery) {
-            const findings = await searchWeb(executedSearchQuery);
-            if (findings) {
-                liveWebContext = `\nREAL-TIME LIVE WEB SEARCH RESULTS for "${executedSearchQuery}":\n${findings}\n(Use these verified real-time facts to answer accurately. If asked about current teams, seasons, scores, or news, rely on these facts!)\n`;
+            const searchRes = await searchWeb(executedSearchQuery);
+            if (searchRes && searchRes.text) {
+                liveWebContext = `\nREAL-TIME LIVE WEB SEARCH RESULTS for "${executedSearchQuery}":\n${searchRes.text}\n(Use these verified real-time facts to answer accurately. If asked about current teams, seasons, scores, or news, rely on these facts!)\n`;
+                searchSources = searchRes.sources || [];
             }
         }
     }
 
-    const systemInstructionText = `You are "null", an advanced, witty, highly intelligent, and helpful AI assistant living inside a Discord server.
+    const systemInstructionText = `You are "null", a brilliant, sharp-witted, highly intelligent, and helpful AI companion living inside a Discord server.
 ${serverContext}
 ${liveWebContext}
 Core Personality & Capabilities:
-- Answer naturally, helpfully, and concisely for Discord chat. Use code blocks for code and bold for emphasis.
-- You speak fluently in the language the user speaks to you (Hebrew, English, etc.).
-- NEVER show internal reasoning, thinking process, or monologue. Directly output your final clean response.
-- When live web search results are provided above, use them to provide up-to-date accurate facts (current teams, current seasons, scores, news).
-- You remember recent conversation in this channel.
-- You can see members, their roles, server information, and details about who is speaking to you.
+- You are knowledgeable, perceptive, and quick-witted with a cool, natural Discord vibe.
+- You speak fluently in the language the user speaks to you (Hebrew, English, etc.). Answer with high intelligence, depth, and great clarity.
+- When answering complex, factual, or programming questions, provide high-quality, comprehensive answers with clean markdown.
+- NEVER show internal reasoning, thinking process (<think>), or monologue. Directly output your final, polished response.
+- When live web search results are provided above, use them directly to provide accurate, up-to-date facts (current teams, latest seasons, scores, news).
+- You remember recent conversation in this channel and understand who is speaking to you.
 - Do not mention that you are an AI model or prompt; just talk naturally as null.`;
 
     // Smart Rotation & Execution Order
@@ -651,8 +668,11 @@ Core Personality & Capabilities:
 
             if (reply && reply.trim().length > 0) {
                 aiCooldowns[provider] = 0; // Success: clear cooldown
-                if (executedSearchQuery && liveWebContext && !reply.includes('Searched the web for:')) {
-                    reply += `\n\n🌐 *Searched the web for: "${executedSearchQuery}"*`;
+                if (executedSearchQuery && liveWebContext && !reply.includes('מקורות מידע:') && !reply.includes('Searched the web')) {
+                    const sourcesText = searchSources.length > 0
+                        ? searchSources.map(s => `\`${s}\``).join(' • ')
+                        : `חיפוש רשת: "${executedSearchQuery}"`;
+                    reply += `\n\n🌐 *מקורות מידע:* ${sourcesText}`;
                 }
                 return reply;
             }
