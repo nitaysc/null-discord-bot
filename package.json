@@ -4,7 +4,8 @@
   "description": "Discord bot named null with online presence and commands, ready for bot-hosting.net",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node --expose-gc --max-old-space-size=160 --optimize-for-size index.js",
+    "postinstall": "node node_modules/ffmpeg-static/install.js || true"
   },
   "allowScripts": {
     "ffmpeg-static": true,

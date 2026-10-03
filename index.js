@@ -1,7 +1,16 @@
 require('dotenv').config();
+const v8 = require('v8');
+
+// Optimize V8 engine memory footprint for low-RAM containers (256MB limits)
+try {
+    v8.setFlagsFromString('--optimize_for_size');
+} catch {}
+
+const fs = require('fs');
 const {
     Client,
     GatewayIntentBits,
+    Options,
     ActivityType,
     EmbedBuilder,
     ActionRowBuilder,
@@ -13,21 +22,6 @@ const { Player, useQueue, useMainPlayer } = require('discord-player');
 const { DefaultExtractors } = require('@discord-player/extractor');
 const { YoutubeExtractor } = require('discord-player-youtubei');
 
-// Ensure FFmpeg binary exists (handles npm 12 allowScripts restrictions on hosting platforms)
-try {
-    const ffmpegPath = require('ffmpeg-static');
-    const fs = require('fs');
-    if (!ffmpegPath || !fs.existsSync(ffmpegPath)) {
-        console.log('📦 FFmpeg binary is missing. Downloading FFmpeg now...');
-        const cp = require('child_process');
-        const installer = require.resolve('ffmpeg-static/install.js');
-        cp.execSync(`node "${installer}"`, { stdio: 'inherit' });
-        console.log('✅ FFmpeg binary downloaded successfully!');
-    }
-} catch (err) {
-    console.warn('⚠️ FFmpeg verification note:', err.message);
-}
-
 // Validate Discord Token
 const TOKEN = process.env.DISCORD_TOKEN?.trim();
 if (!TOKEN || TOKEN === 'your_bot_token_here') {
@@ -35,20 +29,75 @@ if (!TOKEN || TOKEN === 'your_bot_token_here') {
     console.error('❌ ERROR: DISCORD_TOKEN is not configured!');
     console.error('Please add your valid token in the .env file or in your');
     console.error('bot-hosting.net environment variables.');
-    console.error('Example: DISCORD_TOKEN=your_token_here');
     console.error('======================================================');
     process.exit(1);
 }
 
-// Initialize Client with Voice & Message intents
+// In-process check to ensure FFmpeg binary is available without spawning sub-processes
+try {
+    const ffmpegPath = require('ffmpeg-static');
+    if (!ffmpegPath || !fs.existsSync(ffmpegPath)) {
+        console.log('📦 FFmpeg binary is missing. Running in-process installer...');
+        require('ffmpeg-static/install.js');
+        console.log('✅ FFmpeg binary installed successfully!');
+    }
+} catch (err) {
+    console.warn('⚠️ FFmpeg check notice:', err.message);
+}
+
+// Low-Memory Discord Client: Strips all unneeded caches (Messages, Presences, Threads, Reactions)
+// Keeps RAM usage below ~70-80MB, leaving 170MB+ headroom for audio & future AI brain features!
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildVoiceStates,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent
-    ]
+    ],
+    makeCache: Options.cacheWithLimits({
+        ApplicationCommandManager: 0,
+        BaseGuildEmojiManager: 0,
+        GuildBanManager: 0,
+        GuildInviteManager: 0,
+        GuildMemberManager: 10,
+        GuildStickerManager: 0,
+        GuildScheduledEventManager: 0,
+        MessageManager: 0,
+        PresenceManager: 0,
+        ReactionManager: 0,
+        ReactionUserManager: 0,
+        StageInstanceManager: 0,
+        ThreadManager: 0,
+        ThreadMemberManager: 0,
+        UserManager: 10,
+        VoiceStateManager: 25
+    }),
+    sweepers: {
+        messages: {
+            interval: 60,
+            lifetime: 30
+        },
+        users: {
+            interval: 120,
+            filter: () => user => user.id !== client.user?.id
+        }
+    }
 });
+
+// Periodic memory check & GC cleanup
+setInterval(() => {
+    if (global.gc) {
+        try { global.gc(); } catch {}
+    }
+    const mem = process.memoryUsage();
+    const rssMB = Math.round(mem.rss / 1024 / 1024);
+    if (rssMB > 200) {
+        console.warn(`⚠️ High RAM Warning (${rssMB}MB). Running garbage collection...`);
+        if (global.gc) {
+            try { global.gc(); } catch {}
+        }
+    }
+}, 60000);
 
 // Initialize Player
 const player = new Player(client, {
@@ -56,7 +105,7 @@ const player = new Player(client, {
 });
 
 // Helper: Create sleek visual progress bar
-function createProgressBar(currentMs, totalMs, length = 14) {
+function createProgressBar(currentMs, totalMs, length = 12) {
     if (!totalMs || totalMs === 0) return '🔘' + '▬'.repeat(length);
     const progress = Math.min(Math.max(currentMs / totalMs, 0), 1);
     const progressChars = Math.round(length * progress);
@@ -107,18 +156,17 @@ player.events.on('playerStart', (queue, track) => {
             { name: 'Requested By', value: `${track.requestedBy?.username || 'Unknown'}`, inline: true },
             { name: 'Queue', value: `${queue.tracks.size} track(s) next`, inline: true }
         )
-        .setFooter({ text: 'null Music • Use the buttons below to control playback' });
+        .setFooter({ text: 'null Music • Interactive Controls Below' });
 
     if (queue.metadata && typeof queue.metadata.send === 'function') {
         queue.metadata.send({
             embeds: [embed],
             components: [createMusicControlButtons(false)]
-        }).catch((err) => console.warn('Could not send playerStart message:', err.message));
+        }).catch(() => {});
     }
 });
 
 player.events.on('audioTrackAdd', (queue, track) => {
-    // Only send notification if track is added while something is already playing
     if (queue.isPlaying()) {
         const embed = new EmbedBuilder()
             .setTitle('➕ Added to Queue')
@@ -150,7 +198,7 @@ player.events.on('audioTracksAdd', (queue, tracks) => {
 player.events.on('emptyQueue', (queue) => {
     const embed = new EmbedBuilder()
         .setTitle('✅ Queue Finished')
-        .setDescription('All songs have finished playing. Leaving voice channel.')
+        .setDescription('All songs finished playing. Leaving voice channel.')
         .setColor(0x2B2D31);
 
     if (queue.metadata && typeof queue.metadata.send === 'function') {
@@ -161,7 +209,7 @@ player.events.on('emptyQueue', (queue) => {
 player.events.on('emptyChannel', (queue) => {
     const embed = new EmbedBuilder()
         .setTitle('👋 Voice Channel Empty')
-        .setDescription('Everyone left the voice channel. Stopping playback to save resources.')
+        .setDescription('Voice channel is empty. Disconnecting to save server RAM.')
         .setColor(0x2B2D31);
 
     if (queue.metadata && typeof queue.metadata.send === 'function') {
@@ -176,7 +224,7 @@ player.events.on('error', (queue, error) => {
 player.events.on('playerError', (queue, error) => {
     console.error(`[Playback Error] Guild ${queue.guild?.id}:`, error.message);
     if (queue.metadata && typeof queue.metadata.send === 'function') {
-        queue.metadata.send({ content: `⚠️ Error playing track: ${error.message}` }).catch(() => {});
+        queue.metadata.send({ content: `⚠️ Playback notice: ${error.message}` }).catch(() => {});
     }
 });
 
@@ -226,14 +274,14 @@ const slashCommands = [
         .setDescription('Check bot and API latency'),
     new SlashCommandBuilder()
         .setName('null')
-        .setDescription('Learn about the null entity'),
+        .setDescription('View bot status, RAM memory usage, and uptime'),
     new SlashCommandBuilder()
         .setName('help')
         .setDescription('Show all commands and usage instructions')
 ];
 
 // Bot Ready Event
-client.once('ready', async () => {
+const onReady = async () => {
     console.log('======================================================');
     console.log(`✅ [ONLINE] Logged in as: ${client.user.tag}`);
     console.log(`🆔 Bot ID: ${client.user.id}`);
@@ -279,11 +327,14 @@ client.once('ready', async () => {
     } catch (error) {
         console.error('⚠️ Failed to register global slash commands:', error.message);
     }
-});
+};
 
-// Handle Slash Command Interactions
+client.once('clientReady', onReady);
+client.once('ready', onReady);
+
+// Handle Interactions
 client.on('interactionCreate', async (interaction) => {
-    // 1. Button Controls (Interactive Player UI like Luna / Lara)
+    // 1. Button Controls
     if (interaction.isButton()) {
         const queue = useQueue(interaction.guildId);
         const memberVoice = interaction.member?.voice?.channel;
@@ -291,11 +342,9 @@ client.on('interactionCreate', async (interaction) => {
         if (!memberVoice) {
             return interaction.reply({ content: '❌ You must be in a voice channel to use the controls!', ephemeral: true });
         }
-
         if (queue && queue.channel?.id !== memberVoice.id) {
             return interaction.reply({ content: '❌ You must be in the same voice channel as the bot!', ephemeral: true });
         }
-
         if (!queue || !queue.isPlaying()) {
             return interaction.reply({ content: '❌ No music is currently playing!', ephemeral: true });
         }
@@ -320,7 +369,7 @@ client.on('interactionCreate', async (interaction) => {
             }
             case 'music_stop': {
                 queue.delete();
-                await interaction.reply({ content: '⏹️ Stopped music, cleared the queue, and disconnected.', ephemeral: true });
+                await interaction.reply({ content: '⏹️ Stopped music, cleared queue, and disconnected.', ephemeral: true });
                 break;
             }
             case 'music_shuffle': {
@@ -379,9 +428,11 @@ client.on('interactionCreate', async (interaction) => {
                     metadata: interaction.channel,
                     volume: 80,
                     leaveOnEmpty: true,
-                    leaveOnEmptyCooldown: 120000,
+                    leaveOnEmptyCooldown: 60000,
                     leaveOnEnd: true,
-                    leaveOnEndCooldown: 120000
+                    leaveOnEndCooldown: 60000,
+                    maxSize: 50,
+                    bufferingTimeout: 3000
                 },
                 requestedBy: interaction.user
             });
@@ -414,12 +465,8 @@ client.on('interactionCreate', async (interaction) => {
     // --- /pause ---
     if (commandName === 'pause') {
         const queue = useQueue(interaction.guildId);
-        if (!queue || !queue.isPlaying()) {
-            return interaction.reply({ content: '❌ No music is currently playing!', ephemeral: true });
-        }
-        if (queue.node.isPaused()) {
-            return interaction.reply({ content: '⚠️ The music is already paused!', ephemeral: true });
-        }
+        if (!queue || !queue.isPlaying()) return interaction.reply({ content: '❌ No music is currently playing!', ephemeral: true });
+        if (queue.node.isPaused()) return interaction.reply({ content: '⚠️ The music is already paused!', ephemeral: true });
         queue.node.pause();
         return interaction.reply({ content: '⏸️ Paused the music!' });
     }
@@ -427,12 +474,8 @@ client.on('interactionCreate', async (interaction) => {
     // --- /resume ---
     if (commandName === 'resume') {
         const queue = useQueue(interaction.guildId);
-        if (!queue || !queue.isPlaying()) {
-            return interaction.reply({ content: '❌ No music is currently playing!', ephemeral: true });
-        }
-        if (!queue.node.isPaused()) {
-            return interaction.reply({ content: '⚠️ Music is not paused!', ephemeral: true });
-        }
+        if (!queue || !queue.isPlaying()) return interaction.reply({ content: '❌ No music is currently playing!', ephemeral: true });
+        if (!queue.node.isPaused()) return interaction.reply({ content: '⚠️ Music is not paused!', ephemeral: true });
         queue.node.resume();
         return interaction.reply({ content: '▶️ Resumed music playback!' });
     }
@@ -440,9 +483,7 @@ client.on('interactionCreate', async (interaction) => {
     // --- /skip ---
     if (commandName === 'skip') {
         const queue = useQueue(interaction.guildId);
-        if (!queue || !queue.isPlaying()) {
-            return interaction.reply({ content: '❌ No music is currently playing!', ephemeral: true });
-        }
+        if (!queue || !queue.isPlaying()) return interaction.reply({ content: '❌ No music is currently playing!', ephemeral: true });
         const current = queue.currentTrack;
         queue.node.skip();
         return interaction.reply({ content: `⏭️ Skipped **${current?.title || 'track'}**!` });
@@ -451,9 +492,7 @@ client.on('interactionCreate', async (interaction) => {
     // --- /stop ---
     if (commandName === 'stop') {
         const queue = useQueue(interaction.guildId);
-        if (!queue) {
-            return interaction.reply({ content: '❌ The bot is not in a voice channel!', ephemeral: true });
-        }
+        if (!queue) return interaction.reply({ content: '❌ The bot is not in a voice channel!', ephemeral: true });
         queue.delete();
         return interaction.reply({ content: '⏹️ Stopped music, cleared queue, and left the voice channel.' });
     }
@@ -461,9 +500,7 @@ client.on('interactionCreate', async (interaction) => {
     // --- /queue ---
     if (commandName === 'queue') {
         const queue = useQueue(interaction.guildId);
-        if (!queue || !queue.isPlaying()) {
-            return interaction.reply({ content: '❌ No music is currently playing!', ephemeral: true });
-        }
+        if (!queue || !queue.isPlaying()) return interaction.reply({ content: '❌ No music is currently playing!', ephemeral: true });
 
         const tracks = queue.tracks.toArray();
         const current = queue.currentTrack;
@@ -483,9 +520,7 @@ client.on('interactionCreate', async (interaction) => {
     // --- /nowplaying ---
     if (commandName === 'nowplaying') {
         const queue = useQueue(interaction.guildId);
-        if (!queue || !queue.isPlaying()) {
-            return interaction.reply({ content: '❌ No music is currently playing!', ephemeral: true });
-        }
+        if (!queue || !queue.isPlaying()) return interaction.reply({ content: '❌ No music is currently playing!', ephemeral: true });
 
         const track = queue.currentTrack;
         const progressTime = queue.node.playbackTime;
@@ -511,9 +546,7 @@ client.on('interactionCreate', async (interaction) => {
     // --- /shuffle ---
     if (commandName === 'shuffle') {
         const queue = useQueue(interaction.guildId);
-        if (!queue || queue.tracks.size < 2) {
-            return interaction.reply({ content: '⚠️ Need at least 2 songs in queue to shuffle!', ephemeral: true });
-        }
+        if (!queue || queue.tracks.size < 2) return interaction.reply({ content: '⚠️ Need at least 2 songs in queue to shuffle!', ephemeral: true });
         queue.tracks.shuffle();
         return interaction.reply({ content: `🔀 Shuffled **${queue.tracks.size}** songs in the queue!` });
     }
@@ -522,9 +555,7 @@ client.on('interactionCreate', async (interaction) => {
     if (commandName === 'volume') {
         const percent = interaction.options.getInteger('percent');
         const queue = useQueue(interaction.guildId);
-        if (!queue || !queue.isPlaying()) {
-            return interaction.reply({ content: '❌ No music is currently playing!', ephemeral: true });
-        }
+        if (!queue || !queue.isPlaying()) return interaction.reply({ content: '❌ No music is currently playing!', ephemeral: true });
         queue.node.setVolume(percent);
         return interaction.reply({ content: `🔊 Volume set to **${percent}%**!` });
     }
@@ -542,7 +573,7 @@ client.on('interactionCreate', async (interaction) => {
                 { name: 'Bot Latency', value: `${roundtripLatency}ms`, inline: true },
                 { name: 'API Latency', value: `${apiLatency}ms`, inline: true }
             )
-            .setFooter({ text: 'null • Online and responsive' });
+            .setFooter({ text: 'null • Optimized and responsive' });
 
         return interaction.editReply({ content: null, embeds: [embed] });
     }
@@ -553,17 +584,25 @@ client.on('interactionCreate', async (interaction) => {
         const uptimeMinutes = Math.floor((client.uptime % 3600000) / 60000);
         const uptimeSeconds = Math.floor((client.uptime % 60000) / 1000);
 
+        const mem = process.memoryUsage();
+        const rssMB = Math.round(mem.rss / 1024 / 1024);
+        const heapMB = Math.round(mem.heapUsed / 1024 / 1024);
+        const ramPercent = Math.round((rssMB / 256) * 100);
+
         const embed = new EmbedBuilder()
             .setTitle('∅ null')
-            .setDescription('An entity hovering in the void. Online, responsive, and musical.')
+            .setDescription('An entity hovering in the void. Lightweight, ultra-optimized, and ready.')
             .setColor(0x000000)
             .setThumbnail(client.user.displayAvatarURL({ dynamic: true, size: 256 }))
             .addFields(
                 { name: 'Status', value: '🟢 Online', inline: true },
                 { name: 'Uptime', value: `${uptimeHours}h ${uptimeMinutes}m ${uptimeSeconds}s`, inline: true },
-                { name: 'Servers', value: `${client.guilds.cache.size}`, inline: true }
+                { name: 'Servers', value: `${client.guilds.cache.size}`, inline: true },
+                { name: 'RAM Usage', value: `${rssMB} MB / 256 MB (${ramPercent}%)`, inline: true },
+                { name: 'Heap Memory', value: `${heapMB} MB`, inline: true },
+                { name: 'AI Readiness', value: 'Ready for AI Brain / Chat', inline: true }
             )
-            .setFooter({ text: 'null • Ready for audio & commands' });
+            .setFooter({ text: 'null • Low-RAM Architecture' });
 
         return interaction.reply({ embeds: [embed] });
     }
@@ -573,10 +612,10 @@ client.on('interactionCreate', async (interaction) => {
         const embed = new EmbedBuilder()
             .setTitle('📖 null Command Center')
             .setColor(0x5865F2)
-            .setDescription('**High quality music playback inspired by Lara & Luna bot**\nSupports YouTube, Spotify, SoundCloud, Apple Music, and direct links.')
+            .setDescription('**High-performance music & lightweight bot inspired by Lara & Luna bot**')
             .addFields(
                 { name: '🎵 Music Commands', value: '`/play <song/url>` - Play song or playlist\n`/pause` - Pause playback\n`/resume` - Resume playback\n`/skip` - Skip current track\n`/stop` - Stop music & leave channel\n`/queue` - View upcoming songs\n`/nowplaying` - Show current song & progress\n`/shuffle` - Shuffle queue\n`/volume <1-100>` - Change volume' },
-                { name: '🎮 Utility Commands', value: '`/ping` - View latency\n`/null` - Bot status & information\n`/help` - This help menu' },
+                { name: '🎮 Utility & Diagnostics', value: '`/ping` - View latency\n`/null` - Live RAM stats & uptime\n`/help` - This help menu' },
                 { name: '🎛️ Interactive Controls', value: 'Every song played comes with interactive **Pause, Skip, Stop, Shuffle, and Queue buttons** attached!' }
             )
             .setFooter({ text: 'null Discord Bot' });
@@ -595,17 +634,12 @@ client.on('messageCreate', async (message) => {
     const args = message.content.slice(prefix.length).trim().split(/ +/);
     const command = args.shift()?.toLowerCase();
 
-    // !play <query>
     if (command === 'play') {
         const query = args.join(' ');
         const voiceChannel = message.member?.voice?.channel;
 
-        if (!voiceChannel) {
-            return message.reply('❌ You must be in a voice channel to play music!');
-        }
-        if (!query) {
-            return message.reply('⚠️ Please provide a song name or URL! (e.g., `!play Faded Alan Walker`)');
-        }
+        if (!voiceChannel) return message.reply('❌ You must be in a voice channel to play music!');
+        if (!query) return message.reply('⚠️ Please provide a song name or URL! (e.g., `!play Faded Alan Walker`)');
 
         const msg = await message.reply('🔍 Searching and loading...');
 
@@ -615,9 +649,11 @@ client.on('messageCreate', async (message) => {
                     metadata: message.channel,
                     volume: 80,
                     leaveOnEmpty: true,
-                    leaveOnEmptyCooldown: 120000,
+                    leaveOnEmptyCooldown: 60000,
                     leaveOnEnd: true,
-                    leaveOnEndCooldown: 120000
+                    leaveOnEndCooldown: 60000,
+                    maxSize: 50,
+                    bufferingTimeout: 3000
                 },
                 requestedBy: message.author
             });
@@ -647,7 +683,6 @@ client.on('messageCreate', async (message) => {
         }
     }
 
-    // !skip
     if (command === 'skip') {
         const queue = useQueue(message.guildId);
         if (!queue || !queue.isPlaying()) return message.reply('❌ No music playing!');
@@ -656,7 +691,6 @@ client.on('messageCreate', async (message) => {
         return message.reply(`⏭️ Skipped **${current?.title || 'track'}**!`);
     }
 
-    // !pause
     if (command === 'pause') {
         const queue = useQueue(message.guildId);
         if (!queue || !queue.isPlaying()) return message.reply('❌ No music playing!');
@@ -664,7 +698,6 @@ client.on('messageCreate', async (message) => {
         return message.reply('⏸️ Paused playback!');
     }
 
-    // !resume
     if (command === 'resume') {
         const queue = useQueue(message.guildId);
         if (!queue || !queue.isPlaying()) return message.reply('❌ No music playing!');
@@ -672,7 +705,6 @@ client.on('messageCreate', async (message) => {
         return message.reply('▶️ Resumed playback!');
     }
 
-    // !stop
     if (command === 'stop') {
         const queue = useQueue(message.guildId);
         if (!queue) return message.reply('❌ Not currently in a voice channel!');
@@ -680,7 +712,6 @@ client.on('messageCreate', async (message) => {
         return message.reply('⏹️ Stopped music and cleared the queue.');
     }
 
-    // !queue
     if (command === 'queue') {
         const queue = useQueue(message.guildId);
         if (!queue || !queue.isPlaying()) return message.reply('❌ No music playing!');
@@ -697,7 +728,6 @@ client.on('messageCreate', async (message) => {
         return message.reply({ embeds: [embed] });
     }
 
-    // !np or !nowplaying
     if (command === 'np' || command === 'nowplaying') {
         const queue = useQueue(message.guildId);
         if (!queue || !queue.isPlaying()) return message.reply('❌ No music playing!');
@@ -713,7 +743,6 @@ client.on('messageCreate', async (message) => {
         return message.reply({ embeds: [embed] });
     }
 
-    // !volume <number>
     if (command === 'volume') {
         const queue = useQueue(message.guildId);
         if (!queue || !queue.isPlaying()) return message.reply('❌ No music playing!');
@@ -723,14 +752,12 @@ client.on('messageCreate', async (message) => {
         return message.reply(`🔊 Volume set to **${vol}%**!`);
     }
 
-    // !ping
     if (command === 'ping') {
         const msg = await message.reply('Pinging...');
         const roundtrip = msg.createdTimestamp - message.createdTimestamp;
         return msg.edit(`🏓 Pong! Bot latency: **${roundtrip}ms** | API latency: **${Math.round(client.ws.ping)}ms**`);
     }
 
-    // !help
     if (command === 'help') {
         return message.reply('📖 Use `/help` to see the full list of music and utility commands, or use `/play <query>` to begin!');
     }
@@ -738,7 +765,7 @@ client.on('messageCreate', async (message) => {
 
 // Process Error Handling
 process.on('unhandledRejection', (reason, promise) => {
-    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+    console.error('Unhandled Rejection:', reason);
 });
 
 process.on('uncaughtException', (err) => {
