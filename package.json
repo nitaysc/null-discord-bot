@@ -1,0 +1,21 @@
+{
+  "name": "null-discord-bot",
+  "version": "1.0.0",
+  "description": "Discord bot named null with online presence and commands, ready for bot-hosting.net",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "discordjs",
+    "null"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "discord.js": "^14.27.0",
+    "dotenv": "^18.0.5"
+  }
+}
