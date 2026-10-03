@@ -597,6 +597,44 @@ async function fetchImagePart(url) {
     }
 }
 
+let cachedGeminiVisionModels = null;
+let lastModelCheck = 0;
+
+// Dynamic model discovery: Queries Google's ModelService to list active models supporting generateContent
+async function getAvailableGeminiVisionModels(geminiKey) {
+    if (cachedGeminiVisionModels && Date.now() - lastModelCheck < 60 * 60 * 1000) {
+        return cachedGeminiVisionModels;
+    }
+
+    const fallbackList = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-flash'];
+
+    try {
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${geminiKey}`, {
+            signal: AbortSignal.timeout(8000)
+        });
+        if (res.ok) {
+            const data = await res.json();
+            const supported = (data.models || [])
+                .filter(m => m.supportedGenerationMethods?.includes('generateContent'))
+                .map(m => m.name.replace(/^models\//, ''));
+
+            const flashModels = supported.filter(m => /flash/i.test(m));
+            const otherModels = supported.filter(m => !/flash/i.test(m) && /gemini/i.test(m));
+            const ordered = [...flashModels, ...otherModels];
+
+            if (ordered.length > 0) {
+                cachedGeminiVisionModels = ordered;
+                lastModelCheck = Date.now();
+                return cachedGeminiVisionModels;
+            }
+        }
+    } catch (e) {
+        console.warn('[Gemini Vision] Could not fetch dynamic models list:', e.message);
+    }
+
+    return fallbackList;
+}
+
 // 3. Google Gemini Vision Engine (Multimodal for Images, GIFs, Screenshots & Memes)
 async function callGeminiVision(geminiKey, systemInstructionText, history, prompt, imageUrls) {
     const contents = [];
@@ -629,7 +667,9 @@ async function callGeminiVision(geminiKey, systemInstructionText, history, promp
         parts: userParts
     });
 
-    const visionModels = ['gemini-2.0-flash', 'gemini-1.5-flash'];
+    const dynamicModels = await getAvailableGeminiVisionModels(geminiKey);
+    // Explicitly place gemini-3.8-flash first as instructed by Google API, followed by dynamic models
+    const visionModels = [...new Set(['gemini-3.8-flash', ...dynamicModels, 'gemini-2.5-flash', 'gemini-flash'])];
     let lastErr = null;
 
     for (const model of visionModels) {
