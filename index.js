@@ -291,19 +291,211 @@ async function searchWeb(query) {
     return results.join('\n');
 }
 
-// Query AI Providers (OpenRouter, Gemini 2.0 Flash, or Groq)
+// ==========================================
+// 🧠 MULTI-PROVIDER AI ROTATION & AUTO-FALLBACK ENGINE
+// ==========================================
+
+let aiRotationIndex = 0;
+const aiCooldowns = {
+    groq: 0,
+    openrouter: 0,
+    gemini: 0
+};
+
+// 1. Groq Cloud Engine (14,400 req/day - Blazing Fast)
+async function callGroq(groqKey, systemInstructionText, history, prompt) {
+    const models = [
+        'openai/gpt-oss-120b',
+        'qwen/qwen3.8-27b',
+        'openai/gpt-oss-20b',
+        'llama-3.3-70b-versatile',
+        'llama-3.1-8b-instant'
+    ];
+
+    const messages = [{ role: 'system', content: systemInstructionText }];
+    for (const h of history) {
+        messages.push({
+            role: h.role === 'model' ? 'assistant' : 'user',
+            content: h.role === 'user' ? `[${h.name}]: ${h.text}` : h.text
+        });
+    }
+    messages.push({ role: 'user', content: prompt });
+
+    let lastErr = null;
+    for (const model of models) {
+        try {
+            const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${groqKey}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    model: model,
+                    messages: messages,
+                    max_tokens: 600
+                })
+            });
+
+            if (res.status === 429) {
+                const err = new Error('Groq rate limited (429)');
+                err.status = 429;
+                err.isRateLimit = true;
+                throw err;
+            }
+
+            const data = await res.json();
+            if (res.ok && data.choices?.[0]?.message?.content) {
+                return data.choices[0].message.content.trim();
+            }
+
+            lastErr = new Error(data.error?.message || `Groq error on ${model}`);
+            if (data.error?.code === 'rate_limit_exceeded') {
+                const err = new Error(data.error?.message || 'Groq rate limited');
+                err.status = 429;
+                err.isRateLimit = true;
+                throw err;
+            }
+        } catch (e) {
+            if (e.isRateLimit || e.status === 429) throw e;
+            lastErr = e;
+        }
+    }
+    throw lastErr || new Error('All Groq models failed');
+}
+
+// 2. OpenRouter Engine (Multi-model free tier with 429 detection)
+async function callOpenRouter(openrouterKey, systemInstructionText, history, prompt) {
+    const messages = [{ role: 'system', content: systemInstructionText }];
+    for (const h of history) {
+        messages.push({
+            role: h.role === 'model' ? 'assistant' : 'user',
+            content: h.role === 'user' ? `[${h.name}]: ${h.text}` : h.text
+        });
+    }
+    messages.push({ role: 'user', content: prompt });
+
+    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${openrouterKey}`,
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            models: [
+                'qwen/qwen3.8-27b:free',
+                'nvidia/nemotron-3.5-lightning:free',
+                'liquid/lfm-2.5-2.6b:free',
+                'google/gemma-2-9b-it:free'
+            ],
+            messages: messages,
+            max_tokens: 600
+        })
+    });
+
+    if (res.status === 429) {
+        const err = new Error('OpenRouter 429 rate limit exceeded');
+        err.status = 429;
+        err.isRateLimit = true;
+        throw err;
+    }
+
+    const data = await res.json();
+    if (!res.ok) {
+        const err = new Error(data.error?.message || `OpenRouter error (${res.status})`);
+        if (data.error?.code === 429 || err.message.toLowerCase().includes('rate limit')) {
+            err.status = 429;
+            err.isRateLimit = true;
+        }
+        throw err;
+    }
+
+    const reply = data.choices?.[0]?.message?.content;
+    if (reply) return reply.trim();
+    throw new Error('OpenRouter returned empty choices');
+}
+
+// 3. Google Gemini Engine (1,500 req/day + Native Google Search Grounding)
+async function callGemini(geminiKey, systemInstructionText, history, prompt) {
+    const contents = [];
+    for (const h of history) {
+        contents.push({
+            role: h.role === 'model' ? 'model' : 'user',
+            parts: [{ text: h.role === 'user' ? `[${h.name}]: ${h.text}` : h.text }]
+        });
+    }
+    contents.push({
+        role: 'user',
+        parts: [{ text: prompt }]
+    });
+
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`;
+    const payload = {
+        systemInstruction: { parts: [{ text: systemInstructionText }] },
+        contents: contents,
+        tools: [{ googleSearch: {} }],
+        generationConfig: {
+            temperature: 0.7,
+            maxOutputTokens: 1000
+        }
+    };
+
+    let response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+        delete payload.tools;
+        response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+    }
+
+    if (response.status === 429) {
+        const err = new Error('Gemini 429 rate limit exceeded');
+        err.status = 429;
+        err.isRateLimit = true;
+        throw err;
+    }
+
+    if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        const err = new Error(errData.error?.message || `Gemini error (${response.status})`);
+        if (response.status === 429 || err.message.toLowerCase().includes('quota') || err.message.toLowerCase().includes('rate')) {
+            err.status = 429;
+            err.isRateLimit = true;
+        }
+        throw err;
+    }
+
+    const data = await response.json();
+    const replyText = data.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
+    if (replyText) return replyText.trim();
+    throw new Error('Gemini returned empty candidate');
+}
+
+// Main AI Handler: Rotates healthy providers and automatically cascades/falls back on error
 async function generateAIResponse(prompt, channelId, serverContext) {
+    const groqKey = process.env.GROQ_API_KEY?.trim();
     const openrouterKey = process.env.OPENROUTER_API_KEY?.trim();
     const geminiKey = process.env.GEMINI_API_KEY?.trim();
-    const groqKey = process.env.GROQ_API_KEY?.trim();
 
-    if (!openrouterKey && !geminiKey && !groqKey) {
+    const configuredProviders = [];
+    if (groqKey) configuredProviders.push('groq');
+    if (openrouterKey) configuredProviders.push('openrouter');
+    if (geminiKey) configuredProviders.push('gemini');
+
+    if (configuredProviders.length === 0) {
         return `👋 **Hey! My AI brain is ready, but I need an AI token to activate my thoughts!**
 
 🔑 **How to add your API key**:
 In your **bot-hosting.net** panel:
 - Open \`.env\` in **File Manager** (or Environment Variables)
-- Add: \`OPENROUTER_API_KEY=your_key_here\` (or \`GEMINI_API_KEY\`)
+- Add: \`GROQ_API_KEY=your_key_here\` (or \`OPENROUTER_API_KEY\`, \`GEMINI_API_KEY\`)
 - Click **Save** and **Restart**!`;
     }
 
@@ -335,164 +527,60 @@ Core Personality & Capabilities:
 - Answer helpfully, naturally, and concisely for Discord chat. Use code blocks for code and bold for emphasis.
 - Do not mention that you are a system prompt; just talk naturally as null.`;
 
-    // 1. Google Gemini (1,500 requests/day + Native Google Search Grounding)
-    if (geminiKey) {
-        try {
-            const contents = [];
-            for (const h of history) {
-                contents.push({
-                    role: h.role === 'model' ? 'model' : 'user',
-                    parts: [{ text: h.role === 'user' ? `[${h.name}]: ${h.text}` : h.text }]
-                });
-            }
-            contents.push({
-                role: 'user',
-                parts: [{ text: prompt }]
-            });
+    // Smart Rotation & Fallback Order
+    const now = Date.now();
+    const available = configuredProviders.filter(p => !aiCooldowns[p] || aiCooldowns[p] <= now);
+    const candidates = available.length > 0 ? available : [...configuredProviders];
 
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`;
-            const payload = {
-                systemInstruction: { parts: [{ text: systemInstructionText }] },
-                contents: contents,
-                tools: [{ googleSearch: {} }],
-                generationConfig: {
-                    temperature: 0.7,
-                    maxOutputTokens: 1000
-                }
-            };
-
-            let response = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-
-            if (!response.ok) {
-                delete payload.tools;
-                response = await fetch(url, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-            }
-
-            if (response.ok) {
-                const data = await response.json();
-                const replyText = data.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
-                if (replyText) return replyText;
-            }
-        } catch (e) {
-            console.warn('Gemini notice:', e.message);
-        }
+    const startIndex = (aiRotationIndex++) % candidates.length;
+    const executionOrder = [
+        ...candidates.slice(startIndex),
+        ...candidates.slice(0, startIndex)
+    ];
+    for (const p of configuredProviders) {
+        if (!executionOrder.includes(p)) executionOrder.push(p);
     }
 
-    // 2. Groq (14,400 requests/day - Blazing Fast Llama 3.3 70B)
-    if (groqKey) {
+    let lastError = null;
+    let rateLimitHit = false;
+
+    for (const provider of executionOrder) {
         try {
-            const messages = [{ role: 'system', content: systemInstructionText }];
-            for (const h of history) {
-                messages.push({
-                    role: h.role === 'model' ? 'assistant' : 'user',
-                    content: h.role === 'user' ? `[${h.name}]: ${h.text}` : h.text
-                });
+            let reply = null;
+            if (provider === 'groq') {
+                reply = await callGroq(groqKey, systemInstructionText, history, prompt);
+            } else if (provider === 'openrouter') {
+                reply = await callOpenRouter(openrouterKey, systemInstructionText, history, prompt);
+            } else if (provider === 'gemini') {
+                reply = await callGemini(geminiKey, systemInstructionText, history, prompt);
             }
-            messages.push({ role: 'user', content: prompt });
 
-            const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${groqKey}`,
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    model: 'llama-3.3-70b-versatile',
-                    messages: messages,
-                    max_tokens: 1000
-                })
-            });
-
-            if (res.ok) {
-                const data = await res.json();
-                let reply = data.choices?.[0]?.message?.content;
-                if (reply) {
-                    if (executedSearchQuery && liveWebContext) {
-                        reply += `\n\n🌐 *Searched the web for: "${executedSearchQuery}"*`;
-                    }
-                    return reply;
+            if (reply && reply.trim().length > 0) {
+                aiCooldowns[provider] = 0; // Mark healthy
+                if (executedSearchQuery && liveWebContext && !reply.includes('Searched the web for:')) {
+                    reply += `\n\n🌐 *Searched the web for: "${executedSearchQuery}"*`;
                 }
+                return reply;
             }
-        } catch (e) {
-            console.warn('Groq notice:', e.message);
-        }
-    }
-
-    // 3. OpenRouter (50 requests/day free tier)
-    if (openrouterKey) {
-        try {
-            const messages = [{ role: 'system', content: systemInstructionText }];
-            for (const h of history) {
-                messages.push({
-                    role: h.role === 'model' ? 'assistant' : 'user',
-                    content: h.role === 'user' ? `[${h.name}]: ${h.text}` : h.text
-                });
-            }
-            messages.push({ role: 'user', content: prompt });
-
-            const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${openrouterKey}`,
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    models: [
-                        'qwen/qwen3.8-27b:free',
-                        'nvidia/nemotron-3.5-lightning:free',
-                        'liquid/lfm-2.5-2.6b:free'
-                    ],
-                    messages: messages,
-                    max_tokens: 1000
-                })
-            });
-
-            if (res.status === 429) {
-                return `⚠️ **OpenRouter Free Limit Reached (50 daily messages used)**
-
-OpenRouter caps free accounts at 50 requests per day. To get **massive limits** that won't run out:
-
-🔥 **Option 1: Groq (14,400 messages per day - Super Fast)**
-1. Open **https://console.groq.com/keys** (sign in with Google)
-2. Click **Create API Key** and copy it
-3. Add \`GROQ_API_KEY=gsk_...\` into your \`.env\` on bot-hosting.net and restart!
-
-🌐 **Option 2: Google Gemini (1,500 messages per day + Live Google Search)**
-1. Open **https://aistudio.google.com/app/apikey** (sign in with Google)
-2. Click **Create API Key** and copy it
-3. Add \`GEMINI_API_KEY=AIzaSy...\` into your \`.env\` on bot-hosting.net and restart!`;
-            }
-
-            if (res.ok) {
-                const data = await res.json();
-                let reply = data.choices?.[0]?.message?.content;
-                if (reply) {
-                    if (executedSearchQuery && liveWebContext) {
-                        reply += `\n\n🌐 *Searched the web for: "${executedSearchQuery}"*`;
-                    }
-                    return reply;
-                }
+        } catch (err) {
+            lastError = err;
+            if (err.isRateLimit || err.status === 429) {
+                rateLimitHit = true;
+                aiCooldowns[provider] = Date.now() + (5 * 60 * 1000); // 5-minute cooldown
+                console.warn(`⚠️ [AI Rotation] Provider "${provider}" reached rate limit / quota (429). Falling back to next available provider...`);
             } else {
-                const errData = await res.json().catch(() => ({}));
-                if (errData.error?.code === 429 || errData.error?.message?.includes('rate')) {
-                    return `⚠️ **OpenRouter Daily Limit Exceeded (50 messages/day)**
-Switch to **Groq** (\`GROQ_API_KEY\`, 14,400 messages/day at https://console.groq.com/keys) or **Google Gemini** (\`GEMINI_API_KEY\`, 1,500 messages/day at https://aistudio.google.com/app/apikey)!`;
-                }
+                aiCooldowns[provider] = Date.now() + (30 * 1000); // 30-second error cooldown
+                console.warn(`⚠️ [AI Rotation] Provider "${provider}" notice: ${err.message}. Falling back to next available provider...`);
             }
-        } catch (e) {
-            console.warn('OpenRouter notice:', e.message);
         }
     }
 
-    return 'No AI provider configured.';
+    if (rateLimitHit) {
+        return `⚠️ **All configured AI providers (${configuredProviders.join(', ')}) have hit their rate limits or daily quotas.**\n` +
+               `The bot rotated and attempted fallback across all keys. Please wait a few moments for quota refresh!`;
+    }
+
+    return `⚠️ Could not generate an AI response right now (${lastError?.message || 'Unknown provider issue'}).`;
 }
 
 // ==========================================
@@ -1126,9 +1214,14 @@ client.on('interactionCreate', async (interaction) => {
 
         const connectedNodes = client.riffy.leastUsedNodes.map(n => `🟢 ${n.name}`).join('\n') || '⚠️ Reconnecting...';
 
-        const aiStatus = (process.env.GEMINI_API_KEY || process.env.GROQ_API_KEY || process.env.OPENROUTER_API_KEY)
-            ? '🟢 Active (Web Search & 50 Memory Enabled)'
-            : '🟡 Waiting for Key (Add GEMINI_API_KEY in .env)';
+        const activeAiList = [];
+        if (process.env.GROQ_API_KEY) activeAiList.push('Groq (14.4k/day)');
+        if (process.env.OPENROUTER_API_KEY) activeAiList.push('OpenRouter');
+        if (process.env.GEMINI_API_KEY) activeAiList.push('Gemini (1.5k/day)');
+
+        const aiStatus = activeAiList.length > 0
+            ? `🟢 Active (${activeAiList.join(' ↔ ')} Auto-Rotation & Cascade)`
+            : '🟡 Waiting for Key (Add GROQ_API_KEY in .env)';
 
         const embed = new EmbedBuilder()
             .setTitle('⚙️ null — System, Music & AI Brain Status')
