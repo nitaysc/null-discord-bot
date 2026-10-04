@@ -2062,7 +2062,7 @@ function createShopEmbed(userData, category = 'all') {
                     inline: false
                 }
             )
-            .setFooter({ text: 'Commands: /shop • /buy-role • /custom-role • /buy-perk • /buy-badge • /pay' });
+            .setFooter({ text: 'Commands: /shop • /buyrole • /customrole • /buyperk • /buybadge • /pay' });
     } else if (category === 'themes') {
         embed.setTitle('🎨 Rank Card Themes Shop')
             .setDescription(`💰 **Balance:** **${balance}** 🪙 Points | Equipped: **${equippedTheme.emoji} ${equippedTheme.name}**\n*Preview live with the dropdown below, or use \`/preview <theme>\` & \`/buy <theme>\`.*`);
@@ -2099,23 +2099,23 @@ function createShopEmbed(userData, category = 'all') {
             { name: '🌈 Preset Prestige Color Roles', value: roleLines, inline: false },
             {
                 name: '✨ Custom Personal Vanity Role (4,000 pts)',
-                value: 'Create your very own personalized role with **any name and color**!\n• Command: `/custom-role <name> [color]` or `!customrole <name> <hex>`\n• Free edits afterwards to change your role name or color anytime!',
+                value: 'Create your very own personalized role with **any name and color**!\n• Command: `/customrole <name> [color]` or `!customrole <name> <hex>`\n• Free edits afterwards to change your role name or color anytime!',
                 inline: false
             }
         );
-        embed.setFooter({ text: 'Select a role below to buy, or use /buy-role <role>' });
+        embed.setFooter({ text: 'Select a role below to buy, or use /buyrole <role>' });
     } else if (category === 'perks') {
         embed.setTitle('⚡ Perks & Power-ups Shop')
             .setDescription(`💰 **Your Balance:** **${balance}** 🪙 Points\n*Boost your leveling and protect your daily streaks!*`)
             .addFields(
                 {
                     name: '🛡️ Daily Streak Shield (350 Points)',
-                    value: `• **Status:** You have **${shields} / 2** shields stored.\n• **Effect:** If you miss a day of \`/daily\`, your shield protects your streak!\n• Buy with button below or \`/buy-perk shield\` / \`!buy shield\``,
+                    value: `• **Status:** You have **${shields} / 2** shields stored.\n• **Effect:** If you miss a day of \`/daily\`, your shield protects your streak!\n• Buy with button below or \`/buyperk shield\` / \`!buy shield\``,
                     inline: false
                 },
                 {
                     name: '🚀 2x XP & Points Booster (500 Points)',
-                    value: `• **Status:** ${boosterActive ? `🟢 **Active!** (${Math.ceil((userData.boosterUntil - Date.now()) / (1000 * 60 * 60))}h remaining)` : '⚪ **Inactive**'}\n• **Effect:** Doubles (2x) all XP and points earned from text chat and voice calls for **24 hours**!\n• Buy with button below or \`/buy-perk booster\` / \`!buy booster\``,
+                    value: `• **Status:** ${boosterActive ? `🟢 **Active!** (${Math.ceil((userData.boosterUntil - Date.now()) / (1000 * 60 * 60))}h remaining)` : '⚪ **Inactive**'}\n• **Effect:** Doubles (2x) all XP and points earned from text chat and voice calls for **24 hours**!\n• Buy with button below or \`/buyperk booster\` / \`!buy booster\``,
                     inline: false
                 }
             )
@@ -2131,7 +2131,7 @@ function createShopEmbed(userData, category = 'all') {
         }).join('\n\n');
 
         embed.addFields({ name: '🏆 Available Prestige Badges', value: badgeLines, inline: false });
-        embed.setFooter({ text: 'Select a badge below to buy, or use /buy-badge <badge>' });
+        embed.setFooter({ text: 'Select a badge below to buy, or use /buybadge <badge>' });
     }
 
     return embed;
@@ -2725,7 +2725,7 @@ function createPointsEmbed(member, userData) {
     embed.addFields(
         { name: '💡 How to Earn & Play', value: '• **Chat & Calls:** 5-10 pts/text, 5-8 pts/min in call (2x with booster!)\n• **`/daily`:** Daily rewards with streak multiplier & shield protection!\n• **🎰 Casino Games:** `/coinflip`, `/slots`, `/blackjack`\n• **Shop:** Spend points in `/shop` for roles, animated cards, boosters & badges!\n• **💸 Transfer:** Send points to friends with `/pay <user> <amount>`', inline: false }
     );
-    embed.setFooter({ text: 'null Economy • /shop • /buy-role • /custom-role • /buy-perk • /buy-badge • /daily • /pay' })
+    embed.setFooter({ text: 'null Economy • /shop • /buyrole • /customrole • /buyperk • /buybadge • /daily • /pay' })
         .setTimestamp();
 
     return embed;
@@ -3345,7 +3345,7 @@ function createHelpEmbed() {
         .setColor(0x5865F2)
         .addFields(
             { name: '🏆 Leveling & Rank (Arcade System)', value: '`/rank [user]` (or `!rank`) — Check rank card (Level, XP, texts sent, call time, points)\n`/setbio <text>` (or `!bio <text>`) — Set a custom tagline/quote on your rank card!\n`/badges [user]` (or `!badges`) — View unlocked achievements & badges!\n`/leaderboard [type]` (or `!top`) — Server leaderboard (Top 10 by XP or Points)' },
-            { name: '🪙 Economy, Mega Shop & Vanity', value: '`/shop [category]` (or `!shop`) — Mega shop with tabs: Themes, Roles, Perks & Badges!\n`/buy-role <role>` (or `!buyrole`) — Purchase preset glowing color roles!\n`/custom-role <name> [color]` (or `!customrole`) — Create your own personalized vanity role!\n`/buy-perk <shield|booster>` — Daily streak shield (350 pts) or 2x XP/Points booster for 24h (500 pts)!\n`/buy-badge <badge>` — Unlock rare prestige badges for your `/rank` profile card!\n`/preview <theme>` & `/buy <theme>` & `/equip <theme>` — Card themes shop (from Minimal to GIF Loops)\n`/daily` (or `!daily`) — Claim daily reward with streak multiplier & shield protection!\n`/points [user]` (or `!points`) — View wallet, shields, active boosters, and inventory\n`/pay <user> <amount>` / `/transfer` — Transfer coins/points to another member!' },
+            { name: '🪙 Economy, Mega Shop & Vanity', value: '`/shop [category]` (or `!shop`) — Mega shop with tabs: Themes, Roles, Perks & Badges!\n`/buyrole <role>` (or `!buyrole`) — Purchase preset glowing color roles!\n`/customrole <name> [color]` (or `!customrole`) — Create your own personalized vanity role!\n`/buyperk <shield|booster>` — Daily streak shield (350 pts) or 2x XP/Points booster for 24h (500 pts)!\n`/buybadge <badge>` — Unlock rare prestige badges for your `/rank` profile card!\n`/preview <theme>` & `/buy <theme>` & `/equip <theme>` — Card themes shop (from Minimal to GIF Loops)\n`/daily` (or `!daily`) — Claim daily reward with streak multiplier & shield protection!\n`/points [user]` (or `!points`) — View wallet, shields, active boosters, and inventory\n`/pay <user> <amount>` / `/transfer` — Transfer coins/points to another member!' },
             { name: '🎰 Casino & Gambling Minigames', value: '`/coinflip <amount> <heads/tails>` (or `!cf`) — 50/50 double-or-nothing coinflip!\n`/slots <amount>` (or `!slots`) — Spin slot reels for up to 25x Lucky 7 jackpot!\n`/blackjack <amount>` (or `!bj`) — Interactive blackjack table against dealer with buttons (Hit, Stand, Double)!' },
             { name: '🎮 Arcade Minigames', value: '`/hangman [category]` (or `!hangman`) — Interactive Hangman game with real words & ASCII art!\n• Type single letters in chat (e.g. `e`, `a`) or full words to guess!\n• Earn points & XP for finding letters and winning!\n`/hangman-stop` (or `!forfeit`) — Forfeit active game' },
             { name: '🧠 AI Chat & Web Search', value: '• **Mention `@null`** in any channel to chat!\n• **Reply to null\'s messages** to continue the conversation!\n• `/ask <question> [image]` — Ask AI (Groq for text, Gemini Vision for images/GIFs)\n• Remembers **50 messages** of history and knows server members & roles!' },
@@ -3826,7 +3826,7 @@ const slashCommands = [
                 )
         ),
     new SlashCommandBuilder()
-        .setName('buy-role')
+        .setName('buyrole')
         .setDescription('Purchase a preset Discord server color role with your points')
         .addStringOption(option =>
             option.setName('role')
@@ -3843,7 +3843,7 @@ const slashCommands = [
                 )
         ),
     new SlashCommandBuilder()
-        .setName('custom-role')
+        .setName('customrole')
         .setDescription('Create or update your own personal vanity role (4,000 pts)')
         .addStringOption(option =>
             option.setName('name')
@@ -3856,7 +3856,7 @@ const slashCommands = [
                 .setRequired(false)
         ),
     new SlashCommandBuilder()
-        .setName('buy-perk')
+        .setName('buyperk')
         .setDescription('Purchase gameplay perks (Streak Shield, 2x Booster) with points')
         .addStringOption(option =>
             option.setName('perk')
@@ -3868,7 +3868,7 @@ const slashCommands = [
                 )
         ),
     new SlashCommandBuilder()
-        .setName('buy-badge')
+        .setName('buybadge')
         .setDescription('Purchase a prestige badge for your /rank card profile')
         .addStringOption(option =>
             option.setName('badge')
@@ -4048,11 +4048,15 @@ const onReady = async () => {
         console.error('⚠️ Lavalink init notice:', err.message);
     }
 
-    // Register slash commands globally
+    // Register slash commands globally & instantly per guild
     try {
         console.log('🔄 Registering global slash commands...');
         await client.application.commands.set(slashCommands);
         console.log('✅ Global slash commands successfully updated!');
+        for (const guild of client.guilds.cache.values()) {
+            await guild.commands.set(slashCommands).catch(() => {});
+        }
+        console.log(`✅ Instant guild slash commands deployed to ${client.guilds.cache.size} server(s)!`);
     } catch (error) {
         console.error('⚠️ Failed to register global slash commands:', error.message);
     }
@@ -4127,6 +4131,17 @@ client.on('messageCreate', async (message) => {
             const rawKey = lower.replace(/^!(buybadge|buy-badge)\s+/i, '').trim();
             const bKey = SHOP_BADGES[rawKey] ? rawKey : `badge_${rawKey}`;
             const res = handleBuyBadge(message.guild.id, message.author.id, message.member?.displayName || message.author.username, bKey);
+            return message.reply(res.message).catch(() => {});
+        }
+
+        if (lower.startsWith('!buyperk ') || lower.startsWith('!buy-perk ')) {
+            const perk = lower.replace(/^!(buyperk|buy-perk)\s+/i, '').trim();
+            let res;
+            if (perk === 'shield' || perk === 'streak_shield') {
+                res = handleBuyStreakShield(message.guild.id, message.author.id, message.member?.displayName || message.author.username);
+            } else {
+                res = handleBuyBooster(message.guild.id, message.author.id, message.member?.displayName || message.author.username);
+            }
             return message.reply(res.message).catch(() => {});
         }
 
@@ -4757,8 +4772,8 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ embeds: [shopEmbed], components: shopComponents });
     }
 
-    // --- /buy-role ---
-    if (commandName === 'buy-role') {
+    // --- /buyrole ---
+    if (commandName === 'buyrole' || commandName === 'buy-role') {
         if (!interaction.guild) {
             return interaction.reply({ content: '❌ Roles are server-specific! Please run this command inside a server.', ephemeral: true });
         }
@@ -4767,8 +4782,8 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: res.message, ephemeral: !res.success });
     }
 
-    // --- /custom-role ---
-    if (commandName === 'custom-role') {
+    // --- /customrole ---
+    if (commandName === 'customrole' || commandName === 'custom-role') {
         if (!interaction.guild) {
             return interaction.reply({ content: '❌ Roles are server-specific! Please run this command inside a server.', ephemeral: true });
         }
@@ -4778,8 +4793,8 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: res.message, ephemeral: !res.success });
     }
 
-    // --- /buy-perk ---
-    if (commandName === 'buy-perk') {
+    // --- /buyperk ---
+    if (commandName === 'buyperk' || commandName === 'buy-perk') {
         if (!interaction.guild) {
             return interaction.reply({ content: '❌ Perks are server-specific! Please run this command inside a server.', ephemeral: true });
         }
@@ -4793,8 +4808,8 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ content: res.message, ephemeral: !res.success });
     }
 
-    // --- /buy-badge ---
-    if (commandName === 'buy-badge') {
+    // --- /buybadge ---
+    if (commandName === 'buybadge' || commandName === 'buy-badge') {
         if (!interaction.guild) {
             return interaction.reply({ content: '❌ Badges are server-specific! Please run this command inside a server.', ephemeral: true });
         }
