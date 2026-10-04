@@ -51,10 +51,11 @@ const client = new Client({
     ],
     makeCache: Options.cacheWithLimits({
         ApplicationCommandManager: 0,
+        AutoModerationRuleManager: 0,
         BaseGuildEmojiManager: 0,
         GuildBanManager: 0,
         GuildInviteManager: 0,
-        GuildMemberManager: 50,
+        GuildMemberManager: 25,
         GuildStickerManager: 0,
         GuildScheduledEventManager: 0,
         MessageManager: 0,
@@ -64,7 +65,7 @@ const client = new Client({
         StageInstanceManager: 0,
         ThreadManager: 0,
         ThreadMemberManager: 0,
-        UserManager: 20,
+        UserManager: 15,
         VoiceStateManager: 25
     }),
     sweepers: {
@@ -73,8 +74,12 @@ const client = new Client({
             lifetime: 30
         },
         users: {
-            interval: 120,
+            interval: 90,
             filter: () => user => user.id !== client.user?.id
+        },
+        guildMembers: {
+            interval: 120,
+            filter: () => member => member.id !== client.user?.id
         }
     }
 });
@@ -129,7 +134,7 @@ client.on('raw', (packet) => {
 // 🧠 AI BRAIN ENGINE & CONVERSATION MEMORY
 // ==========================================
 
-// Lightweight In-Memory Channel Conversation History (Max 50 messages)
+// Lightweight In-Memory Channel Conversation History (Max 30 messages)
 // Map<channelId, Array<{ role: 'user' | 'model', text: string, name: string, timestamp: number }>>
 const conversationHistories = new Map();
 
@@ -140,26 +145,31 @@ function addMessageToHistory(channelId, role, text, name) {
     const history = conversationHistories.get(channelId);
     history.push({
         role,
-        text: text.slice(0, 1500),
+        text: text.slice(0, 1000),
         name: name || (role === 'model' ? 'null' : 'User'),
         timestamp: Date.now()
     });
-    if (history.length > 50) {
+    if (history.length > 30) {
         history.shift();
     }
 }
 
-// Prune inactive channel histories every 5 minutes to keep RAM < 40MB
+// Prune inactive channel histories and perform memory sweep every 2 minutes (< 35MB RAM target)
 setInterval(() => {
     const now = Date.now();
     for (const [chId, hist] of conversationHistories.entries()) {
         const lastMsg = hist[hist.length - 1];
-        if (!lastMsg || (now - lastMsg.timestamp > 2 * 60 * 60 * 1000)) {
+        if (!lastMsg || (now - lastMsg.timestamp > 30 * 60 * 1000)) {
             conversationHistories.delete(chId);
         }
     }
-    if (gc) { try { gc(); } catch {} }
-}, 300000);
+
+    // Proactive memory trim: if RSS > 45MB or heapUsed > 28MB, trigger GC
+    const mem = process.memoryUsage();
+    if (mem.rss > 45 * 1024 * 1024 || mem.heapUsed > 28 * 1024 * 1024) {
+        if (gc) { try { gc(); } catch {} }
+    }
+}, 120000).unref();
 
 // Helper: Inspect server context, members, and roles for the AI
 function buildServerContext(message) {
@@ -671,58 +681,64 @@ async function callGeminiVision(geminiKey, systemInstructionText, history, promp
         parts: userParts
     });
 
-    const dynamicModels = await getAvailableGeminiVisionModels(geminiKey);
-    // Explicitly place gemini-3.8-flash first as instructed by Google API, followed by dynamic models
-    const visionModels = [...new Set(['gemini-3.8-flash', ...dynamicModels, 'gemini-2.5-flash', 'gemini-flash'])];
-    let lastErr = null;
+    try {
+        const dynamicModels = await getAvailableGeminiVisionModels(geminiKey);
+        // Explicitly place gemini-3.8-flash first as instructed by Google API, followed by dynamic models
+        const visionModels = [...new Set(['gemini-3.8-flash', ...dynamicModels, 'gemini-2.5-flash', 'gemini-flash'])];
+        let lastErr = null;
 
-    for (const model of visionModels) {
-        try {
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
-            const payload = {
-                systemInstruction: { parts: [{ text: systemInstructionText }] },
-                contents: contents,
-                generationConfig: {
-                    temperature: 0.7,
-                    maxOutputTokens: 1000
-                }
-            };
+        for (const model of visionModels) {
+            try {
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
+                const payload = {
+                    systemInstruction: { parts: [{ text: systemInstructionText }] },
+                    contents: contents,
+                    generationConfig: {
+                        temperature: 0.7,
+                        maxOutputTokens: 1000
+                    }
+                };
 
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload),
-                signal: AbortSignal.timeout(25000)
-            });
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                    signal: AbortSignal.timeout(25000)
+                });
 
-            if (response.status === 429) {
-                const err = new Error('Gemini Vision 429 rate limit exceeded');
-                err.status = 429;
-                err.isRateLimit = true;
-                throw err;
-            }
-
-            if (!response.ok) {
-                const errData = await response.json().catch(() => ({}));
-                const err = new Error(errData.error?.message || `Gemini Vision error (${response.status})`);
-                if (response.status === 429 || err.message.toLowerCase().includes('quota') || err.message.toLowerCase().includes('rate')) {
+                if (response.status === 429) {
+                    const err = new Error('Gemini Vision 429 rate limit exceeded');
                     err.status = 429;
                     err.isRateLimit = true;
+                    throw err;
                 }
-                throw err;
+
+                if (!response.ok) {
+                    const errData = await response.json().catch(() => ({}));
+                    const err = new Error(errData.error?.message || `Gemini Vision error (${response.status})`);
+                    if (response.status === 429 || err.message.toLowerCase().includes('quota') || err.message.toLowerCase().includes('rate')) {
+                        err.status = 429;
+                        err.isRateLimit = true;
+                    }
+                    throw err;
+                }
+
+                const data = await response.json();
+                let replyText = data.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
+                replyText = cleanAIResponse(replyText);
+                if (replyText && replyText.trim().length > 0) return replyText.trim();
+            } catch (e) {
+                console.warn(`[Gemini Vision] Model ${model} notice: ${e.message}. Cascading...`);
+                lastErr = e;
             }
-
-            const data = await response.json();
-            let replyText = data.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
-            replyText = cleanAIResponse(replyText);
-            if (replyText && replyText.trim().length > 0) return replyText.trim();
-        } catch (e) {
-            console.warn(`[Gemini Vision] Model ${model} notice: ${e.message}. Cascading...`);
-            lastErr = e;
         }
-    }
 
-    throw lastErr || new Error('Gemini Vision returned empty candidate.');
+        throw lastErr || new Error('Gemini Vision returned empty candidate.');
+    } finally {
+        imageParts.length = 0;
+        contents.length = 0;
+        if (gc) { try { gc(); } catch {} }
+    }
 }
 
 // Main AI Handler: Routes Images & GIFs to Gemini Vision, and all Text to Groq (with OpenRouter fallback)
@@ -1313,7 +1329,7 @@ function loadLevels() {
 function saveLevels() {
     try {
         const tmpFile = `${LEVELS_FILE}.tmp`;
-        fs.writeFileSync(tmpFile, JSON.stringify(levelsCache, null, 2), 'utf8');
+        fs.writeFileSync(tmpFile, JSON.stringify(levelsCache), 'utf8');
         fs.renameSync(tmpFile, LEVELS_FILE);
         levelsDirty = false;
     } catch (e) {
@@ -1324,10 +1340,10 @@ function saveLevels() {
 // Initial load
 loadLevels();
 
-// Periodic auto-save safety net
+// Periodic auto-save safety net (every 3 seconds if dirty)
 setInterval(() => {
     if (levelsDirty) saveLevels();
-}, 5000).unref();
+}, 3000).unref();
 
 // Process exit safeguards to ensure 100% data preservation across restarts
 process.on('exit', saveLevels);
@@ -1463,20 +1479,20 @@ function trackMessageForLeveling(message) {
         user.xp = (user.xp || 0) + xpGain;
         user.points = (user.points || 0) + pointsGain;
         user.lastTextXp = now;
-        saveLevels(); // Save immediately to disk
+        levelsDirty = true;
 
         const newLevel = calculateLevelData(user.xp).level;
         if (newLevel > oldLevel) {
             const bonusPoints = newLevel * 50; // Bonus points on level up
             user.points = (user.points || 0) + bonusPoints;
-            saveLevels();
+            saveLevels(); // Save immediately on milestone level up
 
             message.channel.send({
                 content: `🎉 **Level Up!** <@${message.author.id}>, you advanced to **Level ${newLevel}** and received **+${bonusPoints} Points**! ⭐🪙`
             }).catch(() => {});
         }
     } else {
-        saveLevels(); // Save message count increment
+        levelsDirty = true;
     }
 }
 
@@ -1906,6 +1922,9 @@ async function generateRankCardImage(member, userData, overrideThemeId = null) {
     } catch (e) {
         console.error('[Canvas] Failed to generate rank card image:', e.message);
         return null;
+    } finally {
+        avatarImg = null;
+        if (gc) { try { gc(); } catch {} }
     }
 }
 
@@ -2906,6 +2925,49 @@ async function handleLyricsCommand(context, queryInput = null, isSlash = true) {
 }
 
 // ==========================================
+// ⚙️ SYSTEM STATUS & MEMORY DIAGNOSTICS EMBED
+// ==========================================
+function buildStatusEmbed() {
+    if (gc) { try { gc(); } catch {} }
+
+    const uptime = Math.floor(process.uptime());
+    const hours = Math.floor(uptime / 3600);
+    const minutes = Math.floor((uptime % 3600) / 60);
+    const seconds = uptime % 60;
+
+    const memory = process.memoryUsage();
+    const rssMB = Math.round(memory.rss / 1024 / 1024);
+    const heapMB = Math.round(memory.heapUsed / 1024 / 1024);
+
+    const connectedNodes = client.riffy.leastUsedNodes.map(n => `🟢 ${n.name}`).join('\n') || '⚠️ Reconnecting...';
+
+    const activeAiList = [];
+    if (process.env.GROQ_API_KEY) activeAiList.push('Groq (Text & Web Search)');
+    if (process.env.GEMINI_API_KEY) activeAiList.push('Gemini Vision (Images & GIFs)');
+    if (process.env.OPENROUTER_API_KEY) activeAiList.push('OpenRouter (Backup)');
+
+    const aiStatus = activeAiList.length > 0
+        ? `🟢 Active (${activeAiList.join(' | ')})`
+        : '🟡 Waiting for Key (Add GROQ_API_KEY / GEMINI_API_KEY in .env)';
+
+    return new EmbedBuilder()
+        .setTitle('⚙️ null — System, Music & AI Brain Status')
+        .setColor(0x5865F2)
+        .setThumbnail(client.user.displayAvatarURL())
+        .addFields(
+            { name: '🤖 Bot Status', value: 'ONLINE 24/7', inline: true },
+            { name: '⏱️ Uptime', value: `${hours}h ${minutes}m ${seconds}s`, inline: true },
+            { name: '📶 Discord Ping', value: `${client.ws.ping}ms`, inline: true },
+            { name: '🧠 AI Brain', value: `${aiStatus}\n*Mention @null or reply to messages to talk!*`, inline: false },
+            { name: '💾 Total RAM Usage', value: `**${rssMB} MB** (Heap: ${heapMB} MB)\n*Optimized low-memory profile (<35MB)*`, inline: false },
+            { name: '🎧 Audio Cluster', value: `Lavalink v4 Cluster\n${connectedNodes}`, inline: false },
+            { name: '🌐 Server Count', value: `${client.guilds.cache.size} server(s)`, inline: true },
+            { name: '🔊 Active Players', value: `${client.riffy.players.size} active voice session(s)`, inline: true }
+        )
+        .setFooter({ text: 'null • Built for bot-hosting.net' });
+}
+
+// ==========================================
 // 📖 HELP GUIDE EMBED
 // ==========================================
 function createHelpEmbed() {
@@ -3740,6 +3802,12 @@ client.on('messageCreate', async (message) => {
             return message.reply({ embeds: [embed] }).catch(() => {});
         }
 
+        // Bot status & memory diagnostics: !null / !status / !ram
+        if (lower === '!null' || lower === '!status' || lower === '!ram') {
+            const embed = buildStatusEmbed();
+            return message.reply({ embeds: [embed] }).catch(() => {});
+        }
+
         // Hangman command: !hangman [category] / !hm [category]
         if (lower === '!hangman' || lower === '!hm' || lower.startsWith('!hangman ') || lower.startsWith('!hm ')) {
             const parts = lower.split(/\s+/);
@@ -4497,42 +4565,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // --- /null ---
     if (commandName === 'null') {
-        const uptime = Math.floor(process.uptime());
-        const hours = Math.floor(uptime / 3600);
-        const minutes = Math.floor((uptime % 3600) / 60);
-        const seconds = uptime % 60;
-
-        const memory = process.memoryUsage();
-        const rssMB = Math.round(memory.rss / 1024 / 1024);
-        const heapMB = Math.round(memory.heapUsed / 1024 / 1024);
-
-        const connectedNodes = client.riffy.leastUsedNodes.map(n => `🟢 ${n.name}`).join('\n') || '⚠️ Reconnecting...';
-
-        const activeAiList = [];
-        if (process.env.GROQ_API_KEY) activeAiList.push('Groq (Text & Web Search)');
-        if (process.env.GEMINI_API_KEY) activeAiList.push('Gemini Vision (Images & GIFs)');
-        if (process.env.OPENROUTER_API_KEY) activeAiList.push('OpenRouter (Backup)');
-
-        const aiStatus = activeAiList.length > 0
-            ? `🟢 Active (${activeAiList.join(' | ')})`
-            : '🟡 Waiting for Key (Add GROQ_API_KEY / GEMINI_API_KEY in .env)';
-
-        const embed = new EmbedBuilder()
-            .setTitle('⚙️ null — System, Music & AI Brain Status')
-            .setColor(0x5865F2)
-            .setThumbnail(client.user.displayAvatarURL())
-            .addFields(
-                { name: '🤖 Bot Status', value: 'ONLINE 24/7', inline: true },
-                { name: '⏱️ Uptime', value: `${hours}h ${minutes}m ${seconds}s`, inline: true },
-                { name: '📶 Discord Ping', value: `${client.ws.ping}ms`, inline: true },
-                { name: '🧠 AI Brain', value: `${aiStatus}\n*Mention @null or reply to messages to talk!*`, inline: false },
-                { name: '💾 Total RAM Usage', value: `**${rssMB} MB** (Heap: ${heapMB} MB)\n*Ultra-low memory profile (<40MB)*`, inline: false },
-                { name: '🎧 Audio Cluster', value: `Lavalink v4 Cluster\n${connectedNodes}`, inline: false },
-                { name: '🌐 Server Count', value: `${client.guilds.cache.size} server(s)`, inline: true },
-                { name: '🔊 Active Players', value: `${client.riffy.players.size} active voice session(s)`, inline: true }
-            )
-            .setFooter({ text: 'null • Built for bot-hosting.net' });
-
+        const embed = buildStatusEmbed();
         return interaction.reply({ embeds: [embed] });
     }
 
