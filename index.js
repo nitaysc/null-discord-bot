@@ -22,7 +22,8 @@ const {
     ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle,
-    SlashCommandBuilder
+    SlashCommandBuilder,
+    AttachmentBuilder
 } = require('discord.js');
 const { Riffy } = require('riffy');
 
@@ -1012,7 +1013,14 @@ client.on('voiceStateUpdate', (oldState, newState) => {
 // (Texts Sent, Minutes in Call, Level & XP)
 // ==========================================
 
-const LEVELS_FILE = path.join(__dirname, 'levels.json');
+let canvasModule = null;
+try {
+    canvasModule = require('@napi-rs/canvas');
+} catch (e) {
+    console.warn('[Canvas Notice] @napi-rs/canvas not available, will use embed fallback:', e.message);
+}
+
+const LEVELS_FILE = path.resolve(__dirname, 'levels.json');
 let levelsCache = {};
 let levelsDirty = false;
 
@@ -1029,11 +1037,12 @@ function loadLevels() {
     }
 }
 
-// Safe synchronous save
+// Atomic synchronous save: writes to .tmp then renames to prevent file corruption
 function saveLevels() {
-    if (!levelsDirty) return;
     try {
-        fs.writeFileSync(LEVELS_FILE, JSON.stringify(levelsCache, null, 2), 'utf8');
+        const tmpFile = `${LEVELS_FILE}.tmp`;
+        fs.writeFileSync(tmpFile, JSON.stringify(levelsCache, null, 2), 'utf8');
+        fs.renameSync(tmpFile, LEVELS_FILE);
         levelsDirty = false;
     } catch (e) {
         console.error('[Leveling] Failed to save levels.json:', e.message);
@@ -1043,9 +1052,16 @@ function saveLevels() {
 // Initial load
 loadLevels();
 
-// Debounced auto-save every 15 seconds if data changed
-setInterval(saveLevels, 15000).unref();
+// Periodic auto-save safety net
+setInterval(() => {
+    if (levelsDirty) saveLevels();
+}, 5000).unref();
+
+// Process exit safeguards to ensure 100% data preservation across restarts
 process.on('exit', saveLevels);
+process.on('beforeExit', saveLevels);
+process.on('SIGINT', () => { saveLevels(); process.exit(); });
+process.on('SIGTERM', () => { saveLevels(); process.exit(); });
 
 // Helper to get or initialize a user's record
 function getOrCreateUser(guildId, userId, username = 'Unknown') {
@@ -1060,9 +1076,10 @@ function getOrCreateUser(guildId, userId, username = 'Unknown') {
             lastTextXp: 0,
             username: username
         };
-        levelsDirty = true;
-    } else if (username && username !== 'Unknown') {
+        saveLevels();
+    } else if (username && username !== 'Unknown' && levelsCache[key].username !== username) {
         levelsCache[key].username = username;
+        levelsDirty = true;
     }
     return levelsCache[key];
 }
@@ -1112,17 +1129,9 @@ function getGuildLeaderboard(guildId, limit = 10) {
         .slice(0, limit);
 }
 
-// Progress bar string: ▰▰▰▰▰▰▱▱▱▱
-function createProgressBar(current, max, size = 12) {
-    const ratio = Math.min(Math.max(current / max, 0), 1);
-    const filled = Math.round(size * ratio);
-    const empty = size - filled;
-    return '▰'.repeat(filled) + '▱'.repeat(empty);
-}
-
-// Human readable voice call minutes formatting: "3h 45m (225 min)"
+// Human readable voice call minutes formatting: "3h 45m"
 function formatVoiceDuration(minutes) {
-    if (!minutes || minutes <= 0) return '0 mins';
+    if (!minutes || minutes <= 0) return '0 min';
     const h = Math.floor(minutes / 60);
     const m = minutes % 60;
     if (h > 0) {
@@ -1131,13 +1140,32 @@ function formatVoiceDuration(minutes) {
     return `${m} mins`;
 }
 
-// Awards text message XP & increments message counter
+function formatK(num) {
+    if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+    if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+    return num.toLocaleString();
+}
+
+function roundRect(ctx, x, y, width, height, radius) {
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.lineTo(x + width - radius, y);
+    ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+    ctx.lineTo(x + width, y + height - radius);
+    ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+    ctx.lineTo(x + radius, y + height);
+    ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+    ctx.lineTo(x, y + radius);
+    ctx.quadraticCurveTo(x, y, x + radius, y);
+    ctx.closePath();
+}
+
+// Awards text message XP & increments message counter with instant persistent saving
 function trackMessageForLeveling(message) {
     if (!message.guild || message.author.bot) return;
 
     const user = getOrCreateUser(message.guild.id, message.author.id, message.member?.displayName || message.author.username);
     user.messages = (user.messages || 0) + 1;
-    levelsDirty = true;
 
     const now = Date.now();
     // 60-second cooldown between message XP drops to prevent spam farming
@@ -1146,7 +1174,7 @@ function trackMessageForLeveling(message) {
         const oldLevel = calculateLevelData(user.xp).level;
         user.xp = (user.xp || 0) + xpGain;
         user.lastTextXp = now;
-        levelsDirty = true;
+        saveLevels(); // Save immediately to disk
 
         const newLevel = calculateLevelData(user.xp).level;
         if (newLevel > oldLevel) {
@@ -1154,15 +1182,18 @@ function trackMessageForLeveling(message) {
                 content: `🎉 **Level Up!** <@${message.author.id}>, you advanced to **Level ${newLevel}**! ⭐`
             }).catch(() => {});
         }
+    } else {
+        saveLevels(); // Save message count increment
     }
 }
 
 // Background Voice Call Tracker (Ticks every 60 seconds)
-// Awards call minutes and voice XP for active members in voice channels
+// Awards call minutes and voice XP for active members in voice channels with instant saving
 setInterval(() => {
     try {
         if (!client.guilds || client.guilds.cache.size === 0) return;
 
+        let anyChanged = false;
         for (const [guildId, guild] of client.guilds.cache) {
             for (const [channelId, channel] of guild.channels.cache) {
                 if (channel.isVoiceBased() && channel.id !== guild.afkChannelId) {
@@ -1181,7 +1212,7 @@ setInterval(() => {
                         const xpGain = Math.floor(Math.random() * 6) + 10; // 10 - 15 XP per minute
                         const oldLevel = calculateLevelData(user.xp).level;
                         user.xp = (user.xp || 0) + xpGain;
-                        levelsDirty = true;
+                        anyChanged = true;
 
                         const newLevel = calculateLevelData(user.xp).level;
                         if (newLevel > oldLevel) {
@@ -1195,19 +1226,170 @@ setInterval(() => {
                 }
             }
         }
+        if (anyChanged) saveLevels();
     } catch (e) {
         console.warn('[Leveling Voice Tick Notice]:', e.message);
     }
 }, 60000).unref();
 
-// Builds the Arcade-style Rank Card Embed
+// Generates authentic Arcane-style graphical rank card image (PNG)
+async function generateRankCardImage(member, userData) {
+    if (!canvasModule) return null;
+    try {
+        const { createCanvas, loadImage } = canvasModule;
+
+        const totalXp = userData.xp || 0;
+        const levelData = calculateLevelData(totalXp);
+        const { rank, totalRanked } = getUserRank(member.guild.id, member.id);
+
+        const width = 850;
+        const height = 230;
+        const canvas = createCanvas(width, height);
+        const ctx = canvas.getContext('2d');
+
+        const accentColor = '#2bb6a6'; // Arcane signature teal accent
+
+        // 1. Dark Card Background
+        ctx.fillStyle = '#202225';
+        roundRect(ctx, 0, 0, width, height, 14);
+        ctx.fill();
+
+        // 2. Right-side Arcane polygon accent
+        ctx.save();
+        roundRect(ctx, 0, 0, width, height, 14);
+        ctx.clip();
+        ctx.beginPath();
+        ctx.moveTo(610, 0);
+        ctx.lineTo(width, 0);
+        ctx.lineTo(width, height);
+        ctx.lineTo(700, height);
+        ctx.closePath();
+        ctx.fillStyle = accentColor;
+        ctx.fill();
+        ctx.restore();
+
+        // 3. User Avatar
+        const avX = 85;
+        const avY = 85;
+        const avR = 48;
+
+        let avatarLoaded = false;
+        const avatarUrl = member.user.displayAvatarURL({ extension: 'png', size: 256 });
+        if (avatarUrl) {
+            try {
+                const img = await loadImage(avatarUrl);
+                ctx.save();
+                ctx.beginPath();
+                ctx.arc(avX, avY, avR, 0, Math.PI * 2);
+                ctx.closePath();
+                ctx.clip();
+                ctx.drawImage(img, avX - avR, avY - avR, avR * 2, avR * 2);
+                ctx.restore();
+                avatarLoaded = true;
+            } catch {}
+        }
+
+        if (!avatarLoaded) {
+            ctx.save();
+            ctx.beginPath();
+            ctx.arc(avX, avY, avR, 0, Math.PI * 2);
+            ctx.closePath();
+            ctx.clip();
+            ctx.fillStyle = accentColor;
+            ctx.fillRect(avX - avR, avY - avR, avR * 2, avR * 2);
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'bold 36px "Segoe UI", Arial, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(member.displayName.charAt(0).toUpperCase(), avX, avY);
+            ctx.restore();
+        }
+
+        // Avatar Ring Border
+        ctx.beginPath();
+        ctx.arc(avX, avY, avR, 0, Math.PI * 2);
+        ctx.strokeStyle = accentColor;
+        ctx.lineWidth = 3.5;
+        ctx.stroke();
+
+        // 4. Username Text
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 30px "Segoe UI", Arial, sans-serif';
+        const displayName = member.displayName || member.user.username;
+        const cleanUser = displayName.startsWith('@') ? displayName : `@${displayName}`;
+        ctx.fillText(cleanUser, 160, 62);
+
+        // 5. Underline
+        const textWidth = ctx.measureText(cleanUser).width;
+        const underlineW = Math.max(textWidth + 20, 360);
+        ctx.beginPath();
+        ctx.moveTo(160, 75);
+        ctx.lineTo(Math.min(160 + underlineW, 580), 75);
+        ctx.strokeStyle = accentColor;
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        // 6. Stats Row 1: Level, XP, Rank
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '600 20px "Segoe UI", Arial, sans-serif';
+        const rankText = rank ? `   Rank: #${rank}` : '';
+        ctx.fillText(`Level: ${levelData.level}   XP: ${formatK(levelData.currentXp)} / ${formatK(levelData.neededXp)}${rankText}`, 160, 112);
+
+        // 7. Stats Row 2: Texts sent, Minutes in call
+        ctx.fillStyle = '#b5bac1';
+        ctx.font = '500 16px "Segoe UI", Arial, sans-serif';
+        ctx.fillText(`Texts: ${(userData.messages || 0).toLocaleString()}   •   In Call: ${formatVoiceDuration(userData.voiceMinutes || 0)}`, 160, 142);
+
+        // 8. Progress Bar (Arcane Pill Capsule)
+        const barX = 30;
+        const barY = 175;
+        const barW = 790;
+        const barH = 26;
+        const barR = 13;
+
+        // Outer white capsule
+        ctx.fillStyle = '#ffffff';
+        roundRect(ctx, barX, barY, barW, barH, barR);
+        ctx.fill();
+
+        // Filled teal portion
+        const ratio = Math.min(Math.max(levelData.currentXp / Math.max(levelData.neededXp, 1), 0), 1);
+        const fillW = Math.max(barH, Math.round(barW * ratio));
+
+        ctx.save();
+        roundRect(ctx, barX, barY, barW, barH, barR);
+        ctx.clip();
+
+        ctx.fillStyle = accentColor;
+        roundRect(ctx, barX, barY, fillW, barH, barR);
+        ctx.fill();
+        ctx.restore();
+
+        return canvas.toBuffer('image/png');
+    } catch (e) {
+        console.error('[Canvas] Failed to generate rank card image:', e.message);
+        return null;
+    }
+}
+
+// Progress bar string for Embed fallback: ▰▰▰▰▰▰▱▱▱▱
+function createProgressBar(current, max, size = 12) {
+    const ratio = Math.min(Math.max(current / max, 0), 1);
+    const filled = Math.round(size * ratio);
+    const empty = size - filled;
+    return '▰'.repeat(filled) + '▱'.repeat(empty);
+}
+
+// Builds the Arcade-style Rank Card Embed (Fallback if canvas is unavailable)
 function createRankCardEmbed(member, userData) {
     const totalXp = userData.xp || 0;
     const levelData = calculateLevelData(totalXp);
     const { rank, totalRanked } = getUserRank(member.guild.id, member.id);
 
     const progressBar = createProgressBar(levelData.currentXp, levelData.neededXp, 12);
-    const color = member.displayColor || 0x5865F2;
+    const color = member.displayColor || 0x2BB6A6;
 
     const embed = new EmbedBuilder()
         .setAuthor({
@@ -1239,7 +1421,7 @@ function createLeaderboardEmbed(guild, requestingMember) {
     const topUsers = getGuildLeaderboard(guild.id, 10);
     const embed = new EmbedBuilder()
         .setTitle(`🏆 ${guild.name} — Leveling Leaderboard`)
-        .setColor(0x5865F2)
+        .setColor(0x2BB6A6)
         .setThumbnail(guild.iconURL({ dynamic: true }) || null);
 
     if (topUsers.length === 0) {
@@ -1414,8 +1596,15 @@ client.on('messageCreate', async (message) => {
             const targetUser = message.mentions.users.first() || message.author;
             const targetMember = await message.guild.members.fetch(targetUser.id).catch(() => null) || message.member;
             const userData = getOrCreateUser(message.guild.id, targetUser.id, targetMember.displayName || targetUser.username);
-            const cardEmbed = createRankCardEmbed(targetMember, userData);
-            return message.reply({ embeds: [cardEmbed] }).catch(() => {});
+
+            const cardBuffer = await generateRankCardImage(targetMember, userData);
+            if (cardBuffer) {
+                const attachment = new AttachmentBuilder(cardBuffer, { name: 'rank-card.png' });
+                return message.reply({ files: [attachment] }).catch(() => {});
+            } else {
+                const cardEmbed = createRankCardEmbed(targetMember, userData);
+                return message.reply({ embeds: [cardEmbed] }).catch(() => {});
+            }
         }
 
         if (lower === '!leaderboard' || lower === '!top' || lower === '!lb') {
@@ -1640,13 +1829,21 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: '❌ Leveling is server-specific! Please run this command inside a server.', ephemeral: true });
         }
 
+        await interaction.deferReply();
+
         const targetUser = interaction.options.getUser('user') || interaction.user;
         const targetMember = await interaction.guild.members.fetch(targetUser.id).catch(() => null) || interaction.member;
 
         const userData = getOrCreateUser(interaction.guild.id, targetUser.id, targetMember.displayName || targetUser.username);
-        const cardEmbed = createRankCardEmbed(targetMember, userData);
 
-        return interaction.reply({ embeds: [cardEmbed] });
+        const cardBuffer = await generateRankCardImage(targetMember, userData);
+        if (cardBuffer) {
+            const attachment = new AttachmentBuilder(cardBuffer, { name: 'rank-card.png' });
+            return interaction.editReply({ files: [attachment] });
+        } else {
+            const cardEmbed = createRankCardEmbed(targetMember, userData);
+            return interaction.editReply({ embeds: [cardEmbed] });
+        }
     }
 
     // --- /leaderboard ---
