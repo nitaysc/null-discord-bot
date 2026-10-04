@@ -1026,10 +1026,18 @@ try {
     console.warn('[Canvas Notice] @napi-rs/canvas not available, will use embed fallback:', e.message);
 }
 
+let gifencModule = null;
+try {
+    gifencModule = require('gifenc');
+} catch (e) {
+    console.warn('[GIF Notice] gifenc not available:', e.message);
+}
+
 // ==========================================
 // 🎨 CARD THEMES & PALETTES SHOP
 // ==========================================
 const CARD_THEMES = {
+    // --- Classic (Free / Default) ---
     arcane: {
         id: 'arcane',
         name: 'Arcane Classic',
@@ -1042,50 +1050,58 @@ const CARD_THEMES = {
         accentSecondary: '#1f8b7f',
         textPrimary: '#ffffff',
         textSecondary: '#b5bac1',
-        barBg: '#ffffff'
+        barBg: '#ffffff',
+        animated: false
     },
-    cyberpunk: {
-        id: 'cyberpunk',
-        name: 'Cyberpunk Neon',
-        price: 400,
-        emoji: '⚡',
-        category: 'Crazy & Cool',
-        description: 'Futuristic synthwave with neon hot pink and electric cyan.',
-        bg: '#140c1f',
-        accent: '#ff007f',
-        accentSecondary: '#00f0ff',
+
+    // --- Budget & Starter Themes (120 - 250 Points) ---
+    minimal: {
+        id: 'minimal',
+        name: 'Minimalist Slate',
+        price: 120,
+        emoji: '⚪',
+        category: 'Budget',
+        description: 'Clean monochrome slate with pure white highlights & subtle contrast.',
+        bg: '#18191c',
+        accent: '#e3e5e8',
+        accentSecondary: '#72767d',
         textPrimary: '#ffffff',
-        textSecondary: '#d8b4f8',
-        barBg: '#2a1b3d'
+        textSecondary: '#949ba4',
+        barBg: '#2f3136',
+        animated: false
     },
-    galaxy: {
-        id: 'galaxy',
-        name: 'Cosmic Galaxy',
-        price: 500,
-        emoji: '🌌',
-        category: 'Crazy & Cool',
-        description: 'Deep starlight abyss with royal amethyst purple and gold.',
-        bg: '#0d1117',
-        accent: '#8a2be2',
-        accentSecondary: '#ffd700',
+    pastel: {
+        id: 'pastel',
+        name: 'Pastel Dream',
+        price: 200,
+        emoji: '🌸',
+        category: 'Budget',
+        description: 'Soft sakura pastel pink with lavender and mint cream touches.',
+        bg: '#1e1622',
+        accent: '#ffb7c5',
+        accentSecondary: '#b5e2fa',
         textPrimary: '#ffffff',
-        textSecondary: '#c9d1d9',
-        barBg: '#1e1e2f'
+        textSecondary: '#e8c5e5',
+        barBg: '#36243a',
+        animated: false
     },
-    crimson: {
-        id: 'crimson',
-        name: 'Bloodmoon Crimson',
-        price: 450,
-        emoji: '🩸',
-        category: 'Crazy & Cool',
-        description: 'Obsidian black with blazing ruby red and wine accents.',
-        bg: '#181112',
-        accent: '#ff2a4b',
-        accentSecondary: '#99001a',
+    retro: {
+        id: 'retro',
+        name: 'Retro 80s Pixel',
+        price: 250,
+        emoji: '🕹️',
+        category: 'Budget',
+        description: 'Vintage arcade phosphor amber and dark CRT monitor vibes.',
+        bg: '#19150e',
+        accent: '#ffb000',
+        accentSecondary: '#cc6600',
         textPrimary: '#ffffff',
-        textSecondary: '#d4afb3',
-        barBg: '#2c181a'
+        textSecondary: '#d8aa70',
+        barBg: '#382515',
+        animated: false
     },
+
+    // --- Natural Themes (350 - 400 Points) ---
     nature: {
         id: 'nature',
         name: 'Forest Emerald',
@@ -1098,7 +1114,8 @@ const CARD_THEMES = {
         accentSecondary: '#27ae60',
         textPrimary: '#ffffff',
         textSecondary: '#a3cfbb',
-        barBg: '#1e2d24'
+        barBg: '#1e2d24',
+        animated: false
     },
     sunset: {
         id: 'sunset',
@@ -1112,7 +1129,8 @@ const CARD_THEMES = {
         accentSecondary: '#f39c12',
         textPrimary: '#ffffff',
         textSecondary: '#dfb8aa',
-        barBg: '#2f201d'
+        barBg: '#2f201d',
+        animated: false
     },
     ocean: {
         id: 'ocean',
@@ -1126,7 +1144,151 @@ const CARD_THEMES = {
         accentSecondary: '#0077b6',
         textPrimary: '#ffffff',
         textSecondary: '#9ec5e4',
-        barBg: '#162b3c'
+        barBg: '#162b3c',
+        animated: false
+    },
+
+    // --- Crazy & Cool Themes (400 - 650 Points) ---
+    cyberpunk: {
+        id: 'cyberpunk',
+        name: 'Cyberpunk Neon',
+        price: 400,
+        emoji: '⚡',
+        category: 'Crazy & Cool',
+        description: 'Futuristic synthwave with neon hot pink and electric cyan.',
+        bg: '#140c1f',
+        accent: '#ff007f',
+        accentSecondary: '#00f0ff',
+        textPrimary: '#ffffff',
+        textSecondary: '#d8b4f8',
+        barBg: '#2a1b3d',
+        animated: false
+    },
+    crimson: {
+        id: 'crimson',
+        name: 'Bloodmoon Crimson',
+        price: 450,
+        emoji: '🩸',
+        category: 'Crazy & Cool',
+        description: 'Obsidian black with blazing ruby red and wine accents.',
+        bg: '#181112',
+        accent: '#ff2a4b',
+        accentSecondary: '#99001a',
+        textPrimary: '#ffffff',
+        textSecondary: '#d4afb3',
+        barBg: '#2c181a',
+        animated: false
+    },
+    galaxy: {
+        id: 'galaxy',
+        name: 'Cosmic Galaxy',
+        price: 500,
+        emoji: '🌌',
+        category: 'Crazy & Cool',
+        description: 'Deep starlight abyss with royal amethyst purple and gold.',
+        bg: '#0d1117',
+        accent: '#8a2be2',
+        accentSecondary: '#ffd700',
+        textPrimary: '#ffffff',
+        textSecondary: '#c9d1d9',
+        barBg: '#1e1e2f',
+        animated: false
+    },
+    frost: {
+        id: 'frost',
+        name: 'Glacial Frost',
+        price: 550,
+        emoji: '❄️',
+        category: 'Crazy & Cool',
+        description: 'Sub-zero frozen ice cavern with arctic blizzard crystal blue.',
+        bg: '#0c1624',
+        accent: '#64d8cb',
+        accentSecondary: '#9be7ff',
+        textPrimary: '#ffffff',
+        textSecondary: '#bce7f5',
+        barBg: '#182b42',
+        animated: false
+    },
+    royal: {
+        id: 'royal',
+        name: 'Royal Sovereign',
+        price: 650,
+        emoji: '👑',
+        category: 'Crazy & Cool',
+        description: 'Deep imperial velvet blue with dazzling royal crown gold.',
+        bg: '#0e1124',
+        accent: '#e6b800',
+        accentSecondary: '#415a77',
+        textPrimary: '#ffffff',
+        textSecondary: '#d4af37',
+        barBg: '#1c223d',
+        animated: false
+    },
+
+    // --- ✨ ANIMATED / MOVING GIF TIER (1,200 - 2,500 Points) ---
+    matrix_gif: {
+        id: 'matrix_gif',
+        name: 'Matrix Cyber Rain',
+        price: 1200,
+        emoji: '🟢',
+        category: '✨ Animated Moving Cards',
+        description: 'Moving digital green code streams flowing down the screen!',
+        bg: '#060d08',
+        accent: '#00ff66',
+        accentSecondary: '#008f39',
+        textPrimary: '#ffffff',
+        textSecondary: '#7fff9a',
+        barBg: '#0f2613',
+        animated: true,
+        animType: 'matrix'
+    },
+    synthwave_gif: {
+        id: 'synthwave_gif',
+        name: 'Hyper Neon Synthwave',
+        price: 1500,
+        emoji: '⚡',
+        category: '✨ Animated Moving Cards',
+        description: 'Moving animated laser grid sweeps and glowing dual neon pulses!',
+        bg: '#0f081c',
+        accent: '#ff007f',
+        accentSecondary: '#00f0ff',
+        textPrimary: '#ffffff',
+        textSecondary: '#ff99dd',
+        barBg: '#25133d',
+        animated: true,
+        animType: 'synthwave'
+    },
+    aurora_gif: {
+        id: 'aurora_gif',
+        name: 'Cosmic Aurora Borealis',
+        price: 1800,
+        emoji: '🌌',
+        category: '✨ Animated Moving Cards',
+        description: 'Moving celestial starlight particles and glowing aurora waves!',
+        bg: '#080d1a',
+        accent: '#20e3b2',
+        accentSecondary: '#9b51e0',
+        textPrimary: '#ffffff',
+        textSecondary: '#a5f3fc',
+        barBg: '#13213d',
+        animated: true,
+        animType: 'aurora'
+    },
+    prestige_gif: {
+        id: 'prestige_gif',
+        name: 'Mythic Supernova',
+        price: 2500,
+        emoji: '✨',
+        category: '✨ Animated Moving Cards',
+        description: 'The ultimate animated prestige: radiant golden sparkle rays & shining halo!',
+        bg: '#141008',
+        accent: '#ffd700',
+        accentSecondary: '#ff9100',
+        textPrimary: '#ffffff',
+        textSecondary: '#ffe680',
+        barBg: '#332710',
+        animated: true,
+        animType: 'prestige'
     }
 };
 
@@ -1186,6 +1348,7 @@ function getOrCreateUser(guildId, userId, username = 'Unknown') {
             points: 100, // 100 free starting points
             inventory: ['arcane'],
             equippedTheme: 'arcane',
+            customText: '',
             lastTextXp: 0,
             lastDaily: 0,
             username: username
@@ -1196,6 +1359,7 @@ function getOrCreateUser(guildId, userId, username = 'Unknown') {
         if (levelsCache[key].points === undefined) levelsCache[key].points = 0;
         if (!levelsCache[key].inventory) levelsCache[key].inventory = ['arcane'];
         if (!levelsCache[key].equippedTheme) levelsCache[key].equippedTheme = 'arcane';
+        if (levelsCache[key].customText === undefined) levelsCache[key].customText = '';
         if (username && username !== 'Unknown' && levelsCache[key].username !== username) {
             levelsCache[key].username = username;
             levelsDirty = true;
@@ -1365,7 +1529,289 @@ setInterval(() => {
     }
 }, 60000).unref();
 
-// Generates authentic Arcane-style graphical rank card image (PNG) using equipped theme (or preview theme)
+// Draws a single frame of the authentic Arcane-style graphical rank card onto ctx
+function drawRankCardContent(ctx, width, height, member, userData, levelData, rank, totalRanked, theme, avatarImg, frameIndex = 0, totalFrames = 8) {
+    const accentColor = theme.accent;
+
+    ctx.save();
+
+    // 1. Dark Card Background (Themed)
+    ctx.fillStyle = theme.bg;
+    roundRect(ctx, 0, 0, width, height, 14);
+    ctx.fill();
+
+    // 2. Animated effects layer (if theme is animated)
+    if (theme.animated) {
+        ctx.save();
+        roundRect(ctx, 0, 0, width, height, 14);
+        ctx.clip();
+
+        if (theme.animType === 'matrix') {
+            // Digital Matrix code rain stream
+            const chars = ['0', '1', '7', 'X', '9', 'Z', 'λ', '4', '8', '3', '§', 'F'];
+            for (let c = 0; c < 20; c++) {
+                const colX = 20 + c * 42;
+                const headY = ((frameIndex * 28 + c * 35) % (height + 90)) - 30;
+                for (let tr = 0; tr < 6; tr++) {
+                    const cy = headY - tr * 14;
+                    if (cy > 8 && cy < height - 8) {
+                        ctx.fillStyle = tr === 0 ? '#ffffff' : `rgba(0, 255, 102, ${(0.65 - tr * 0.1).toFixed(2)})`;
+                        ctx.font = '12px monospace';
+                        ctx.fillText(chars[(c + tr + frameIndex) % chars.length], colX, cy);
+                    }
+                }
+            }
+        } else if (theme.animType === 'synthwave') {
+            // Retro synthwave perspective laser grid sweep
+            ctx.lineWidth = 1.5;
+            for (let i = 0; i < 4; i++) {
+                const gy = 150 + ((frameIndex * 8 + i * 22) % 80);
+                const op = (0.15 + (gy - 150) / 100 * 0.35).toFixed(2);
+                ctx.strokeStyle = `rgba(255, 0, 127, ${op})`;
+                ctx.beginPath();
+                ctx.moveTo(0, gy);
+                ctx.lineTo(width, gy);
+                ctx.stroke();
+            }
+            // Vertical perspective fan lines
+            ctx.strokeStyle = 'rgba(0, 240, 255, 0.12)';
+            for (let vx = 50; vx <= width - 50; vx += 90) {
+                ctx.beginPath();
+                ctx.moveTo(width / 2, 145);
+                ctx.lineTo(vx, height);
+                ctx.stroke();
+            }
+        } else if (theme.animType === 'aurora') {
+            // Undulating celestial aurora borealis waves
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            for (let x = 0; x <= width; x += 40) {
+                const y = 45 + Math.sin((x / 110) + (frameIndex / 8) * Math.PI * 2) * 22;
+                ctx.lineTo(x, y);
+            }
+            ctx.lineTo(width, 0);
+            ctx.closePath();
+            ctx.fillStyle = 'rgba(32, 227, 178, 0.18)';
+            ctx.fill();
+
+            // Twinkling starlight particles
+            for (let s = 0; s < 14; s++) {
+                const sx = (s * 61 + 35) % (width - 40);
+                const sy = (s * 37 + 15) % 150;
+                const op = (0.3 + 0.7 * ((Math.sin(frameIndex + s * 1.5) + 1) / 2)).toFixed(2);
+                ctx.fillStyle = `rgba(165, 243, 252, ${op})`;
+                ctx.beginPath();
+                ctx.arc(sx, sy, 1.8, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        } else if (theme.animType === 'prestige') {
+            // Mythic gold sparkles floating upwards
+            for (let s = 0; s < 12; s++) {
+                const sx = 180 + (s * 53) % 620;
+                const sy = ((220 - (frameIndex * 8 + s * 21)) % 200) + 10;
+                const op = (0.35 + 0.65 * ((Math.sin(frameIndex + s) + 1) / 2)).toFixed(2);
+                ctx.fillStyle = `rgba(255, 215, 0, ${op})`;
+                ctx.beginPath();
+                ctx.arc(sx, sy, 2.2, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        ctx.restore();
+    }
+
+    // 3. Right-side Arcane polygon accent (Dual-tone)
+    ctx.save();
+    roundRect(ctx, 0, 0, width, height, 14);
+    ctx.clip();
+
+    // Secondary angle
+    ctx.beginPath();
+    ctx.moveTo(590, 0);
+    ctx.lineTo(width, 0);
+    ctx.lineTo(width, height);
+    ctx.lineTo(670, height);
+    ctx.closePath();
+    ctx.fillStyle = theme.accentSecondary;
+    ctx.fill();
+
+    // Primary angle
+    ctx.beginPath();
+    ctx.moveTo(620, 0);
+    ctx.lineTo(width, 0);
+    ctx.lineTo(width, height);
+    ctx.lineTo(705, height);
+    ctx.closePath();
+    ctx.fillStyle = accentColor;
+    ctx.fill();
+
+    // Shimmer / sheen across polygon if animated
+    if (theme.animated) {
+        const sheenX = 590 + ((frameIndex / totalFrames) * 260);
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.16)';
+        ctx.beginPath();
+        ctx.moveTo(sheenX, 0);
+        ctx.lineTo(sheenX + 35, 0);
+        ctx.lineTo(sheenX + 115, height);
+        ctx.lineTo(sheenX + 80, height);
+        ctx.closePath();
+        ctx.fill();
+    }
+
+    ctx.restore();
+
+    // 4. Theme Badge (Top Right)
+    ctx.fillStyle = theme.accent;
+    ctx.font = 'bold 15px "Segoe UI", Arial, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText(`${theme.emoji} ${theme.name}`, 820, 32);
+    ctx.textAlign = 'left';
+
+    // 5. User Avatar
+    const avX = 85;
+    const avY = 85;
+    const avR = 48;
+
+    if (avatarImg) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(avX, avY, avR, 0, Math.PI * 2);
+        ctx.closePath();
+        ctx.clip();
+        ctx.drawImage(avatarImg, avX - avR, avY - avR, avR * 2, avR * 2);
+        ctx.restore();
+    } else {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(avX, avY, avR, 0, Math.PI * 2);
+        ctx.closePath();
+        ctx.clip();
+        ctx.fillStyle = accentColor;
+        ctx.fillRect(avX - avR, avY - avR, avR * 2, avR * 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 36px "Segoe UI", Arial, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const initial = (member.displayName || member.user?.username || 'U').charAt(0).toUpperCase();
+        ctx.fillText(initial, avX, avY);
+        ctx.restore();
+    }
+
+    // Avatar Ring Border
+    ctx.beginPath();
+    ctx.arc(avX, avY, avR, 0, Math.PI * 2);
+    if (theme.animType === 'prestige') {
+        ctx.strokeStyle = '#ffd700';
+        ctx.lineWidth = 3.5 + Math.sin(frameIndex * Math.PI / 4) * 1.5;
+    } else {
+        ctx.strokeStyle = accentColor;
+        ctx.lineWidth = 3.5;
+    }
+    ctx.stroke();
+
+    // 6. Username Text & Optional Custom Bio
+    const displayName = member.displayName || member.user?.username || 'User';
+    const cleanUser = displayName.startsWith('@') ? displayName : `@${displayName}`;
+    const customBio = (userData.customText || '').trim();
+
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+
+    if (customBio) {
+        // Username slightly higher to fit bio
+        ctx.fillStyle = theme.textPrimary;
+        ctx.font = 'bold 28px "Segoe UI", Arial, sans-serif';
+        ctx.fillText(cleanUser, 160, 52);
+
+        // Custom Bio / Tagline
+        ctx.fillStyle = theme.textSecondary;
+        ctx.font = 'italic 15px "Segoe UI", Arial, sans-serif';
+        ctx.fillText(`“${customBio.slice(0, 45)}”`, 160, 74);
+
+        // Underline below bio
+        const textWidth = ctx.measureText(cleanUser).width;
+        const underlineW = Math.max(textWidth + 20, 360);
+        ctx.beginPath();
+        ctx.moveTo(160, 84);
+        ctx.lineTo(Math.min(160 + underlineW, 580), 84);
+        ctx.strokeStyle = accentColor;
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        // Stats Row 1: Level, XP, Rank
+        ctx.fillStyle = theme.textPrimary;
+        ctx.font = '600 19px "Segoe UI", Arial, sans-serif';
+        const rankText = rank ? `   Rank: #${rank}` : '';
+        ctx.fillText(`Level: ${levelData.level}   XP: ${formatK(levelData.currentXp)} / ${formatK(levelData.neededXp)}${rankText}`, 160, 116);
+
+        // Stats Row 2: Texts sent, Minutes in call, Points
+        ctx.fillStyle = theme.textSecondary;
+        ctx.font = '500 15px "Segoe UI", Arial, sans-serif';
+        ctx.fillText(`Texts: ${(userData.messages || 0).toLocaleString()}   •   In Call: ${formatVoiceDuration(userData.voiceMinutes || 0)}   •   Points: ${(userData.points || 0).toLocaleString()} 🪙`, 160, 144);
+    } else {
+        // Default layout without bio
+        ctx.fillStyle = theme.textPrimary;
+        ctx.font = 'bold 30px "Segoe UI", Arial, sans-serif';
+        ctx.fillText(cleanUser, 160, 62);
+
+        // Underline
+        const textWidth = ctx.measureText(cleanUser).width;
+        const underlineW = Math.max(textWidth + 20, 360);
+        ctx.beginPath();
+        ctx.moveTo(160, 75);
+        ctx.lineTo(Math.min(160 + underlineW, 580), 75);
+        ctx.strokeStyle = accentColor;
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        // Stats Row 1: Level, XP, Rank
+        ctx.fillStyle = theme.textPrimary;
+        ctx.font = '600 20px "Segoe UI", Arial, sans-serif';
+        const rankText = rank ? `   Rank: #${rank}` : '';
+        ctx.fillText(`Level: ${levelData.level}   XP: ${formatK(levelData.currentXp)} / ${formatK(levelData.neededXp)}${rankText}`, 160, 112);
+
+        // Stats Row 2: Texts sent, Minutes in call, Points
+        ctx.fillStyle = theme.textSecondary;
+        ctx.font = '500 16px "Segoe UI", Arial, sans-serif';
+        ctx.fillText(`Texts: ${(userData.messages || 0).toLocaleString()}   •   In Call: ${formatVoiceDuration(userData.voiceMinutes || 0)}   •   Points: ${(userData.points || 0).toLocaleString()} 🪙`, 160, 142);
+    }
+
+    // 7. Progress Bar (Pill Capsule with themed background and fill)
+    const barX = 30;
+    const barY = 175;
+    const barW = 790;
+    const barH = 26;
+    const barR = 13;
+
+    // Outer capsule
+    ctx.fillStyle = theme.barBg;
+    roundRect(ctx, barX, barY, barW, barH, barR);
+    ctx.fill();
+
+    // Filled portion
+    const ratio = Math.min(Math.max(levelData.currentXp / Math.max(levelData.neededXp, 1), 0), 1);
+    const fillW = Math.max(barH, Math.round(barW * ratio));
+
+    ctx.save();
+    roundRect(ctx, barX, barY, barW, barH, barR);
+    ctx.clip();
+
+    ctx.fillStyle = accentColor;
+    roundRect(ctx, barX, barY, fillW, barH, barR);
+    ctx.fill();
+
+    // Shimmer across progress bar if animated
+    if (theme.animated && fillW > 30) {
+        const sheenBarX = barX + Math.round(((frameIndex / totalFrames) * fillW));
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
+        ctx.fillRect(sheenBarX - 12, barY, 24, barH);
+    }
+
+    ctx.restore();
+    ctx.restore();
+}
+
+// Generates authentic Arcane-style graphical rank card image (PNG or animated GIF)
 async function generateRankCardImage(member, userData, overrideThemeId = null) {
     if (!canvasModule) return null;
     try {
@@ -1377,152 +1823,57 @@ async function generateRankCardImage(member, userData, overrideThemeId = null) {
 
         const themeId = overrideThemeId || userData.equippedTheme || 'arcane';
         const theme = CARD_THEMES[themeId] || CARD_THEMES.arcane;
-        const accentColor = theme.accent;
 
         const width = 850;
         const height = 230;
-        const canvas = createCanvas(width, height);
-        const ctx = canvas.getContext('2d');
 
-        // 1. Dark Card Background (Themed)
-        ctx.fillStyle = theme.bg;
-        roundRect(ctx, 0, 0, width, height, 14);
-        ctx.fill();
-
-        // 2. Right-side Arcane polygon accent (Dual-tone)
-        ctx.save();
-        roundRect(ctx, 0, 0, width, height, 14);
-        ctx.clip();
-
-        // Secondary angle
-        ctx.beginPath();
-        ctx.moveTo(590, 0);
-        ctx.lineTo(width, 0);
-        ctx.lineTo(width, height);
-        ctx.lineTo(670, height);
-        ctx.closePath();
-        ctx.fillStyle = theme.accentSecondary;
-        ctx.fill();
-
-        // Primary angle
-        ctx.beginPath();
-        ctx.moveTo(620, 0);
-        ctx.lineTo(width, 0);
-        ctx.lineTo(width, height);
-        ctx.lineTo(705, height);
-        ctx.closePath();
-        ctx.fillStyle = accentColor;
-        ctx.fill();
-
-        ctx.restore();
-
-        // Theme Badge (Top Right)
-        ctx.fillStyle = theme.accent;
-        ctx.font = 'bold 15px "Segoe UI", Arial, sans-serif';
-        ctx.textAlign = 'right';
-        ctx.fillText(`${theme.emoji} ${theme.name}`, 820, 32);
-        ctx.textAlign = 'left';
-
-        // 3. User Avatar
-        const avX = 85;
-        const avY = 85;
-        const avR = 48;
-
-        let avatarLoaded = false;
-        const avatarUrl = member.user.displayAvatarURL({ extension: 'png', size: 256 });
+        // Preload avatar once for all frames
+        let avatarImg = null;
+        const avatarUrl = member.user?.displayAvatarURL ? member.user.displayAvatarURL({ extension: 'png', size: 256 }) : null;
         if (avatarUrl) {
             try {
-                const img = await loadImage(avatarUrl);
-                ctx.save();
-                ctx.beginPath();
-                ctx.arc(avX, avY, avR, 0, Math.PI * 2);
-                ctx.closePath();
-                ctx.clip();
-                ctx.drawImage(img, avX - avR, avY - avR, avR * 2, avR * 2);
-                ctx.restore();
-                avatarLoaded = true;
+                avatarImg = await loadImage(avatarUrl);
             } catch {}
         }
 
-        if (!avatarLoaded) {
-            ctx.save();
-            ctx.beginPath();
-            ctx.arc(avX, avY, avR, 0, Math.PI * 2);
-            ctx.closePath();
-            ctx.clip();
-            ctx.fillStyle = accentColor;
-            ctx.fillRect(avX - avR, avY - avR, avR * 2, avR * 2);
-            ctx.fillStyle = '#ffffff';
-            ctx.font = 'bold 36px "Segoe UI", Arial, sans-serif';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.fillText(member.displayName.charAt(0).toUpperCase(), avX, avY);
-            ctx.restore();
+        // Check if theme is animated
+        if (theme.animated && gifencModule) {
+            const { GIFEncoder, quantize, applyPalette } = gifencModule;
+            const canvas = createCanvas(width, height);
+            const ctx = canvas.getContext('2d');
+            const gif = GIFEncoder();
+            const totalFrames = 8;
+
+            for (let f = 0; f < totalFrames; f++) {
+                ctx.clearRect(0, 0, width, height);
+                drawRankCardContent(ctx, width, height, member, userData, levelData, rank, totalRanked, theme, avatarImg, f, totalFrames);
+
+                const imgData = ctx.getImageData(0, 0, width, height).data;
+                const palette = quantize(imgData, 64);
+                const index = applyPalette(imgData, palette);
+                gif.writeFrame(index, width, height, { palette, delay: 110 });
+            }
+
+            gif.finish();
+            return {
+                buffer: Buffer.from(gif.bytes()),
+                isAnimated: true,
+                filename: `rank-card-${theme.id}.gif`,
+                mime: 'image/gif'
+            };
+        } else {
+            // Static PNG card
+            const canvas = createCanvas(width, height);
+            const ctx = canvas.getContext('2d');
+            drawRankCardContent(ctx, width, height, member, userData, levelData, rank, totalRanked, theme, avatarImg, 0, 1);
+
+            return {
+                buffer: canvas.toBuffer('image/png'),
+                isAnimated: false,
+                filename: `rank-card-${theme.id}.png`,
+                mime: 'image/png'
+            };
         }
-
-        // Avatar Ring Border
-        ctx.beginPath();
-        ctx.arc(avX, avY, avR, 0, Math.PI * 2);
-        ctx.strokeStyle = accentColor;
-        ctx.lineWidth = 3.5;
-        ctx.stroke();
-
-        // 4. Username Text
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'alphabetic';
-        ctx.fillStyle = theme.textPrimary;
-        ctx.font = 'bold 30px "Segoe UI", Arial, sans-serif';
-        const displayName = member.displayName || member.user.username;
-        const cleanUser = displayName.startsWith('@') ? displayName : `@${displayName}`;
-        ctx.fillText(cleanUser, 160, 62);
-
-        // 5. Underline
-        const textWidth = ctx.measureText(cleanUser).width;
-        const underlineW = Math.max(textWidth + 20, 360);
-        ctx.beginPath();
-        ctx.moveTo(160, 75);
-        ctx.lineTo(Math.min(160 + underlineW, 580), 75);
-        ctx.strokeStyle = accentColor;
-        ctx.lineWidth = 3;
-        ctx.stroke();
-
-        // 6. Stats Row 1: Level, XP, Rank
-        ctx.fillStyle = theme.textPrimary;
-        ctx.font = '600 20px "Segoe UI", Arial, sans-serif';
-        const rankText = rank ? `   Rank: #${rank}` : '';
-        ctx.fillText(`Level: ${levelData.level}   XP: ${formatK(levelData.currentXp)} / ${formatK(levelData.neededXp)}${rankText}`, 160, 112);
-
-        // 7. Stats Row 2: Texts sent, Minutes in call, Points
-        ctx.fillStyle = theme.textSecondary;
-        ctx.font = '500 16px "Segoe UI", Arial, sans-serif';
-        ctx.fillText(`Texts: ${(userData.messages || 0).toLocaleString()}   •   In Call: ${formatVoiceDuration(userData.voiceMinutes || 0)}   •   Points: ${(userData.points || 0).toLocaleString()} 🪙`, 160, 142);
-
-        // 8. Progress Bar (Pill Capsule with themed background and fill)
-        const barX = 30;
-        const barY = 175;
-        const barW = 790;
-        const barH = 26;
-        const barR = 13;
-
-        // Outer capsule
-        ctx.fillStyle = theme.barBg;
-        roundRect(ctx, barX, barY, barW, barH, barR);
-        ctx.fill();
-
-        // Filled portion
-        const ratio = Math.min(Math.max(levelData.currentXp / Math.max(levelData.neededXp, 1), 0), 1);
-        const fillW = Math.max(barH, Math.round(barW * ratio));
-
-        ctx.save();
-        roundRect(ctx, barX, barY, barW, barH, barR);
-        ctx.clip();
-
-        ctx.fillStyle = accentColor;
-        roundRect(ctx, barX, barY, fillW, barH, barR);
-        ctx.fill();
-        ctx.restore();
-
-        return canvas.toBuffer('image/png');
     } catch (e) {
         console.error('[Canvas] Failed to generate rank card image:', e.message);
         return null;
@@ -1552,22 +1903,27 @@ function createRankCardEmbed(member, userData) {
             iconURL: member.user.displayAvatarURL({ dynamic: true })
         })
         .setColor(0x2BB6A6)
-        .setThumbnail(member.user.displayAvatarURL({ dynamic: true, size: 256 }))
-        .addFields(
-            { name: '🏆 Server Rank', value: `**#${rank}** of ${totalRanked}`, inline: true },
-            { name: '⭐ Level', value: `**Level ${levelData.level}**`, inline: true },
-            { name: '✨ Total XP', value: `**${totalXp.toLocaleString()} XP**`, inline: true },
-            {
-                name: `📈 Progress to Level ${levelData.level + 1}`,
-                value: `${progressBar} **${levelData.percent}%**\n\`${levelData.currentXp.toLocaleString()} / ${levelData.neededXp.toLocaleString()} XP\` *(${(levelData.neededXp - levelData.currentXp).toLocaleString()} XP to next level)*`,
-                inline: false
-            },
-            { name: '💬 Texts Sent', value: `**${(userData.messages || 0).toLocaleString()}** messages`, inline: true },
-            { name: '🎙️ Minutes in Call', value: `**${formatVoiceDuration(userData.voiceMinutes || 0)}**`, inline: true },
-            { name: '🪙 Points Balance', value: `**${(userData.points || 0).toLocaleString()}** Points`, inline: true }
-        )
-        .setFooter({ text: `Theme: ${theme.name} • Earn points via chatting, calls & /daily!` })
-        .setTimestamp();
+        .setThumbnail(member.user.displayAvatarURL({ dynamic: true, size: 256 }));
+
+    if (userData.customText) {
+        embed.setDescription(`💬 *“${userData.customText}”*`);
+    }
+
+    embed.addFields(
+        { name: '🏆 Server Rank', value: `**#${rank}** of ${totalRanked}`, inline: true },
+        { name: '⭐ Level', value: `**Level ${levelData.level}**`, inline: true },
+        { name: '✨ Total XP', value: `**${totalXp.toLocaleString()} XP**`, inline: true },
+        {
+            name: `📈 Progress to Level ${levelData.level + 1}`,
+            value: `${progressBar} **${levelData.percent}%**\n\`${levelData.currentXp.toLocaleString()} / ${levelData.neededXp.toLocaleString()} XP\` *(${(levelData.neededXp - levelData.currentXp).toLocaleString()} XP to next level)*`,
+            inline: false
+        },
+        { name: '💬 Texts Sent', value: `**${(userData.messages || 0).toLocaleString()}** messages`, inline: true },
+        { name: '🎙️ Minutes in Call', value: `**${formatVoiceDuration(userData.voiceMinutes || 0)}**`, inline: true },
+        { name: '🪙 Points Balance', value: `**${(userData.points || 0).toLocaleString()}** Points`, inline: true }
+    )
+    .setFooter({ text: `Theme: ${theme.name} • /setbio to set quote • Earn points via chatting, calls & /daily!` })
+    .setTimestamp();
 
     return embed;
 }
@@ -1581,12 +1937,14 @@ function createShopEmbed(userData) {
 
     const embed = new EmbedBuilder()
         .setTitle('🛍️ Rank Card Themes Shop')
-        .setDescription(`Earn points by chatting, joining voice calls, or claiming \`/daily\`!\n💰 **Your Balance:** **${balance}** 🪙 Points\n🎨 **Currently Equipped:** **${equippedTheme.emoji} ${equippedTheme.name}**\n\n*Purchase a theme with \`/buy <theme>\` and equip it with \`/equip <theme>\`!*`)
+        .setDescription(`Earn points by chatting, joining voice calls, or claiming \`/daily\`!\n💰 **Your Balance:** **${balance}** 🪙 Points\n🎨 **Currently Equipped:** **${equippedTheme.emoji} ${equippedTheme.name}**\n\n*Purchase a theme with \`/buy <theme>\`, preview with \`/preview <theme>\`, and equip with \`/equip <theme>\`!*`)
         .setColor(0x2BB6A6);
 
     const categories = {
+        '✨ Animated Moving Cards': [],
         'Crazy & Cool': [],
         'Natural': [],
+        'Budget': [],
         'Classic': []
     };
 
@@ -1600,13 +1958,23 @@ function createShopEmbed(userData) {
         }
     }
 
-    embed.addFields(
-        { name: '⚡ Crazy & Cool Themes', value: categories['Crazy & Cool'].join('\n\n'), inline: false },
-        { name: '🌿 Natural Themes', value: categories['Natural'].join('\n\n'), inline: false },
-        { name: '💎 Classic Themes', value: categories['Classic'].join('\n\n'), inline: false }
-    );
+    if (categories['✨ Animated Moving Cards'].length > 0) {
+        embed.addFields({ name: '✨ Animated Moving Cards (GIF Loops)', value: categories['✨ Animated Moving Cards'].join('\n\n'), inline: false });
+    }
+    if (categories['Crazy & Cool'].length > 0) {
+        embed.addFields({ name: '⚡ Crazy & Cool Themes', value: categories['Crazy & Cool'].join('\n\n'), inline: false });
+    }
+    if (categories['Natural'].length > 0) {
+        embed.addFields({ name: '🌿 Natural Themes', value: categories['Natural'].join('\n\n'), inline: false });
+    }
+    if (categories['Budget'].length > 0) {
+        embed.addFields({ name: '🪙 Budget Themes (Affordable!)', value: categories['Budget'].join('\n\n'), inline: false });
+    }
+    if (categories['Classic'].length > 0) {
+        embed.addFields({ name: '💎 Classic Themes', value: categories['Classic'].join('\n\n'), inline: false });
+    }
 
-    embed.setFooter({ text: 'Commands: /shop • /preview <theme> • /buy <theme> • /equip <theme> • /daily' });
+    embed.setFooter({ text: 'Commands: /shop • /preview <theme> • /buy <theme> • /equip <theme> • /setbio • /daily' });
     return embed;
 }
 
@@ -1615,7 +1983,7 @@ function createShopComponents() {
     const options = Object.values(CARD_THEMES).map(t => ({
         label: `${t.name} (${t.price === 0 ? 'Free' : `${t.price} pts`})`,
         value: t.id,
-        description: `${t.category} • ${t.description.slice(0, 45)}...`,
+        description: `${t.category.replace('✨ ', '')} • ${t.description.slice(0, 40)}...`,
         emoji: t.emoji
     }));
 
@@ -1637,7 +2005,7 @@ async function buildThemePreviewPayload(member, userData, themeId) {
     const balance = userData.points || 0;
     const canAfford = balance >= theme.price;
 
-    const cardBuffer = await generateRankCardImage(member, userData, theme.id);
+    const cardResult = await generateRankCardImage(member, userData, theme.id);
 
     let statusText = '';
     if (isEquipped) statusText = '🟢 **Currently Equipped**';
@@ -1690,9 +2058,10 @@ async function buildThemePreviewPayload(member, userData, themeId) {
         components: [buttonsRow]
     };
 
-    if (cardBuffer) {
-        const attachment = new AttachmentBuilder(cardBuffer, { name: `preview-${theme.id}.png` });
-        embed.setImage(`attachment://preview-${theme.id}.png`);
+    if (cardResult && cardResult.buffer) {
+        const filename = cardResult.filename || (theme.animated ? `preview-${theme.id}.gif` : `preview-${theme.id}.png`);
+        const attachment = new AttachmentBuilder(cardResult.buffer, { name: filename });
+        embed.setImage(`attachment://${filename}`);
         payload.files = [attachment];
     }
 
@@ -2185,6 +2554,35 @@ function processHangmanGuess(game, guessText, guessingUser, guildId) {
     }
 }
 
+// 16 Theme Choices for Slash Commands (Rank Card Themes)
+const THEME_SLASH_CHOICES = [
+    // ✨ Animated Moving GIF Tier
+    { name: '✨ Mythic Supernova [GIF] (2,500 pts)', value: 'prestige_gif' },
+    { name: '🌌 Cosmic Aurora [GIF] (1,800 pts)', value: 'aurora_gif' },
+    { name: '⚡ Hyper Synthwave [GIF] (1,500 pts)', value: 'synthwave_gif' },
+    { name: '🟢 Matrix Cyber Rain [GIF] (1,200 pts)', value: 'matrix_gif' },
+
+    // Crazy & Cool Themes
+    { name: '👑 Royal Sovereign (650 pts)', value: 'royal' },
+    { name: '❄️ Glacial Frost (550 pts)', value: 'frost' },
+    { name: '🌌 Cosmic Galaxy (500 pts)', value: 'galaxy' },
+    { name: '🩸 Bloodmoon Crimson (450 pts)', value: 'crimson' },
+    { name: '⚡ Cyberpunk Neon (400 pts)', value: 'cyberpunk' },
+
+    // Natural Themes
+    { name: '🌊 Abyssal Ocean (400 pts)', value: 'ocean' },
+    { name: '🌅 Golden Sunset (350 pts)', value: 'sunset' },
+    { name: '🌿 Forest Emerald (350 pts)', value: 'nature' },
+
+    // Budget Themes
+    { name: '🕹️ Retro 80s Pixel (250 pts)', value: 'retro' },
+    { name: '🌸 Pastel Dream (200 pts)', value: 'pastel' },
+    { name: '⚪ Minimal Monochrome (120 pts)', value: 'minimal' },
+
+    // Classic Theme
+    { name: '💎 Classic Arcane (Default)', value: 'arcane' }
+];
+
 // Slash Command Definitions
 const slashCommands = [
     new SlashCommandBuilder()
@@ -2217,6 +2615,15 @@ const slashCommands = [
                 .setRequired(false)
         ),
     new SlashCommandBuilder()
+        .setName('setbio')
+        .setDescription('Set a custom tagline / quote to display on your rank card (Max 45 chars)')
+        .addStringOption(option =>
+            option.setName('text')
+                .setDescription('Your custom bio text (leave empty to clear)')
+                .setRequired(false)
+                .setMaxLength(45)
+        ),
+    new SlashCommandBuilder()
         .setName('leaderboard')
         .setDescription('View the server leaderboard (Top 10 members)')
         .addStringOption(option =>
@@ -2238,15 +2645,7 @@ const slashCommands = [
             option.setName('theme')
                 .setDescription('The theme you want to preview')
                 .setRequired(true)
-                .addChoices(
-                    { name: '⚡ Cyberpunk Neon (400 pts)', value: 'cyberpunk' },
-                    { name: '🌌 Cosmic Galaxy (500 pts)', value: 'galaxy' },
-                    { name: '🩸 Bloodmoon Crimson (450 pts)', value: 'crimson' },
-                    { name: '🌿 Forest Emerald (350 pts)', value: 'nature' },
-                    { name: '🌅 Golden Sunset (350 pts)', value: 'sunset' },
-                    { name: '🌊 Abyssal Ocean (400 pts)', value: 'ocean' },
-                    { name: '💎 Classic Arcane (Default)', value: 'arcane' }
-                )
+                .addChoices(...THEME_SLASH_CHOICES)
         ),
     new SlashCommandBuilder()
         .setName('buy')
@@ -2255,14 +2654,7 @@ const slashCommands = [
             option.setName('theme')
                 .setDescription('The theme you want to purchase')
                 .setRequired(true)
-                .addChoices(
-                    { name: '⚡ Cyberpunk Neon (400 pts)', value: 'cyberpunk' },
-                    { name: '🌌 Cosmic Galaxy (500 pts)', value: 'galaxy' },
-                    { name: '🩸 Bloodmoon Crimson (450 pts)', value: 'crimson' },
-                    { name: '🌿 Forest Emerald (350 pts)', value: 'nature' },
-                    { name: '🌅 Golden Sunset (350 pts)', value: 'sunset' },
-                    { name: '🌊 Abyssal Ocean (400 pts)', value: 'ocean' }
-                )
+                .addChoices(...THEME_SLASH_CHOICES)
         ),
     new SlashCommandBuilder()
         .setName('equip')
@@ -2271,15 +2663,7 @@ const slashCommands = [
             option.setName('theme')
                 .setDescription('The theme you want to equip')
                 .setRequired(true)
-                .addChoices(
-                    { name: '💎 Classic Arcane (Default)', value: 'arcane' },
-                    { name: '⚡ Cyberpunk Neon', value: 'cyberpunk' },
-                    { name: '🌌 Cosmic Galaxy', value: 'galaxy' },
-                    { name: '🩸 Bloodmoon Crimson', value: 'crimson' },
-                    { name: '🌿 Forest Emerald', value: 'nature' },
-                    { name: '🌅 Golden Sunset', value: 'sunset' },
-                    { name: '🌊 Abyssal Ocean', value: 'ocean' }
-                )
+                .addChoices(...THEME_SLASH_CHOICES)
         ),
     new SlashCommandBuilder()
         .setName('daily')
@@ -2423,9 +2807,9 @@ client.on('messageCreate', async (message) => {
             const targetMember = await message.guild.members.fetch(targetUser.id).catch(() => null) || message.member;
             const userData = getOrCreateUser(message.guild.id, targetUser.id, targetMember.displayName || targetUser.username);
 
-            const cardBuffer = await generateRankCardImage(targetMember, userData);
-            if (cardBuffer) {
-                const attachment = new AttachmentBuilder(cardBuffer, { name: 'rank-card.png' });
+            const cardResult = await generateRankCardImage(targetMember, userData);
+            if (cardResult && cardResult.buffer) {
+                const attachment = new AttachmentBuilder(cardResult.buffer, { name: cardResult.filename });
                 return message.reply({ files: [attachment] }).catch(() => {});
             } else {
                 const cardEmbed = createRankCardEmbed(targetMember, userData);
@@ -2449,7 +2833,7 @@ client.on('messageCreate', async (message) => {
         if (lower === '!preview' || lower.startsWith('!preview ')) {
             const themeKey = lower.replace('!preview', '').trim();
             if (!themeKey) {
-                return message.reply('💡 Usage: `!preview <theme>` (e.g. `!preview cyberpunk`, `!preview galaxy`, `!preview nature`). Or use `!shop` to preview via the dropdown menu!').catch(() => {});
+                return message.reply('💡 Usage: `!preview <theme>` (e.g. `!preview matrix_gif`, `!preview cyberpunk`, `!preview galaxy`, `!preview nature`). Or use `!shop` to preview via the dropdown menu!').catch(() => {});
             }
             const userData = getOrCreateUser(message.guild.id, message.author.id, message.member?.displayName || message.author.username);
             const previewPayload = await buildThemePreviewPayload(message.member || message.author, userData, themeKey);
@@ -2459,7 +2843,7 @@ client.on('messageCreate', async (message) => {
         if (lower.startsWith('!buy ') || lower === '!buy') {
             const themeKey = lower.replace('!buy', '').trim();
             if (!themeKey) {
-                return message.reply('💡 Usage: `!buy <theme>` (e.g. `!buy cyberpunk`, `!buy galaxy`, `!buy nature`). Type `!shop` to see themes.').catch(() => {});
+                return message.reply('💡 Usage: `!buy <theme>` (e.g. `!buy matrix_gif`, `!buy cyberpunk`, `!buy galaxy`). Type `!shop` to see themes.').catch(() => {});
             }
             const res = handleBuyTheme(message.guild.id, message.author.id, message.member?.displayName || message.author.username, themeKey);
             return message.reply(res.message).catch(() => {});
@@ -2468,7 +2852,7 @@ client.on('messageCreate', async (message) => {
         if (lower.startsWith('!equip ') || lower === '!equip') {
             const themeKey = lower.replace('!equip', '').trim();
             if (!themeKey) {
-                return message.reply('💡 Usage: `!equip <theme>` (e.g. `!equip cyberpunk`, `!equip arcane`). Type `!shop` to view your owned themes.').catch(() => {});
+                return message.reply('💡 Usage: `!equip <theme>` (e.g. `!equip matrix_gif`, `!equip cyberpunk`, `!equip arcane`). Type `!shop` to view your owned themes.').catch(() => {});
             }
             const res = handleEquipTheme(message.guild.id, message.author.id, message.member?.displayName || message.author.username, themeKey);
             return message.reply(res.message).catch(() => {});
@@ -2485,6 +2869,24 @@ client.on('messageCreate', async (message) => {
             const userData = getOrCreateUser(message.guild.id, targetUser.id, targetMember.displayName || targetUser.username);
             const embed = createPointsEmbed(targetMember, userData);
             return message.reply({ embeds: [embed] }).catch(() => {});
+        }
+
+        if (lower === '!bio' || lower.startsWith('!bio ') || lower === '!setbio' || lower.startsWith('!setbio ') || lower === '!clearbio') {
+            const user = getOrCreateUser(message.guild.id, message.author.id, message.member?.displayName || message.author.username);
+            let text = '';
+            if (lower.startsWith('!bio ')) text = message.content.trim().slice(5).trim();
+            else if (lower.startsWith('!setbio ')) text = message.content.trim().slice(8).trim();
+
+            if (lower === '!clearbio' || !text || text.toLowerCase() === 'clear') {
+                user.customText = '';
+                saveLevels();
+                return message.reply('🗑️ Your rank card bio has been cleared!').catch(() => {});
+            }
+
+            const cleaned = text.slice(0, 45);
+            user.customText = cleaned;
+            saveLevels();
+            return message.reply(`✨ **Custom Bio Updated!** Your rank card will now display:\n> *“${cleaned}”*\nType \`!rank\` to see your card!`).catch(() => {});
         }
 
         // Hangman command: !hangman [category] / !hm [category]
@@ -2804,14 +3206,35 @@ client.on('interactionCreate', async (interaction) => {
 
         const userData = getOrCreateUser(interaction.guild.id, targetUser.id, targetMember.displayName || targetUser.username);
 
-        const cardBuffer = await generateRankCardImage(targetMember, userData);
-        if (cardBuffer) {
-            const attachment = new AttachmentBuilder(cardBuffer, { name: 'rank-card.png' });
+        const cardResult = await generateRankCardImage(targetMember, userData);
+        if (cardResult && cardResult.buffer) {
+            const attachment = new AttachmentBuilder(cardResult.buffer, { name: cardResult.filename });
             return interaction.editReply({ files: [attachment] });
         } else {
             const cardEmbed = createRankCardEmbed(targetMember, userData);
             return interaction.editReply({ embeds: [cardEmbed] });
         }
+    }
+
+    // --- /setbio ---
+    if (commandName === 'setbio') {
+        if (!interaction.guild) {
+            return interaction.reply({ content: '❌ Leveling is server-specific! Please run this command inside a server.', ephemeral: true });
+        }
+
+        const text = interaction.options.getString('text');
+        const user = getOrCreateUser(interaction.guild.id, interaction.user.id, interaction.member?.displayName || interaction.user.username);
+
+        if (!text || text.trim() === '' || text.trim().toLowerCase() === 'clear') {
+            user.customText = '';
+            saveLevels();
+            return interaction.reply({ content: '🗑️ Your rank card bio has been cleared!' });
+        }
+
+        const cleaned = text.trim().slice(0, 45);
+        user.customText = cleaned;
+        saveLevels();
+        return interaction.reply({ content: `✨ **Custom Bio Updated!** Your rank card will now display:\n> *“${cleaned}”*\nType \`/rank\` to view your card!` });
     }
 
     // --- /leaderboard ---
@@ -3176,8 +3599,8 @@ client.on('interactionCreate', async (interaction) => {
             .setDescription('Ultra-lightweight, 24/7 high-fidelity music bot with interactive buttons and an AI brain.')
             .setColor(0x5865F2)
             .addFields(
-                { name: '🏆 Leveling & Rank (Arcade System)', value: '`/rank [user]` (or `!rank`) — Check rank card (Level, XP, texts sent, call time, points)\n`/leaderboard [type]` (or `!top`) — Server leaderboard (Top 10 by XP or Points)' },
-                { name: '🪙 Economy & Card Themes Shop', value: '`/shop` (or `!shop`) — Browse shop & preview themes live with interactive dropdown!\n`/preview <theme>` (or `!preview <theme>`) — Generate a live preview card before buying\n`/buy <theme>` (or `!buy <theme>`) — Purchase a card theme with points\n`/equip <theme>` (or `!equip <theme>`) — Equip an owned card theme\n`/daily` (or `!daily`) — Claim daily reward (+200 points every 24h)\n`/points [user]` (or `!points`) — View wallet, points, and owned themes' },
+                { name: '🏆 Leveling & Rank (Arcade System)', value: '`/rank [user]` (or `!rank`) — Check rank card (Level, XP, texts sent, call time, points)\n`/setbio <text>` (or `!bio <text>`) — Set a custom tagline/quote on your rank card!\n`/leaderboard [type]` (or `!top`) — Server leaderboard (Top 10 by XP or Points)' },
+                { name: '🪙 Economy & Card Themes Shop', value: '`/shop` (or `!shop`) — Browse shop & preview themes live with interactive dropdown!\n`/preview <theme>` (or `!preview <theme>`) — Generate live preview (Animated GIFs & static)\n`/buy <theme>` (or `!buy <theme>`) — Purchase a theme (Budget from 120 pts to Animated GIF at 2,500 pts)\n`/equip <theme>` (or `!equip <theme>`) — Equip an owned card theme\n`/daily` (or `!daily`) — Claim daily reward (+200 points every 24h)\n`/points [user]` (or `!points`) — View wallet, points, and owned themes' },
                 { name: '🎮 Arcade Minigames', value: '`/hangman [category]` (or `!hangman`) — Interactive Hangman game with real words & ASCII art!\n• Type single letters in chat (e.g. `e`, `a`) or full words to guess!\n• Earn points & XP for finding letters and winning!\n`/hangman-stop` (or `!forfeit`) — Forfeit active game' },
                 { name: '🧠 AI Chat & Web Search', value: '• **Mention `@null`** in any channel to chat!\n• **Reply to null\'s messages** to continue the conversation!\n• `/ask <question> [image]` — Ask AI (Groq for text, Gemini Vision for images/GIFs)\n• Remembers **50 messages** of history and knows server members & roles!' },
                 { name: '🎶 Music Playback', value: '`/play <song>` — Play songs or playlists (YouTube, Spotify, SoundCloud)\n`/pause` — Pause music\n`/resume` — Resume music\n`/skip` — Skip to next song\n`/stop` — Stop playback & disconnect' },
