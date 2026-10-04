@@ -2260,6 +2260,66 @@ function handleDailyReward(guildId, userId, username) {
     };
 }
 
+// Handles transferring coins/points between server members
+function handleTransferPoints(guildId, senderMember, targetMember, amountStr) {
+    if (!senderMember || !targetMember) {
+        return { success: false, message: '❌ Invalid members specified for transfer!' };
+    }
+
+    if (senderMember.id === targetMember.id) {
+        return { success: false, message: '❌ You cannot transfer points to yourself!' };
+    }
+
+    if (targetMember.user?.bot) {
+        return { success: false, message: '❌ Bots cannot hold points or participate in the economy!' };
+    }
+
+    const senderUser = getOrCreateUser(guildId, senderMember.id, senderMember.displayName || senderMember.user.username);
+    const targetUser = getOrCreateUser(guildId, targetMember.id, targetMember.displayName || targetMember.user.username);
+    const balance = senderUser.points || 0;
+
+    let amount = 0;
+    const lowerAmt = (amountStr || '').toLowerCase().trim();
+    if (lowerAmt === 'all' || lowerAmt === 'max') {
+        amount = balance;
+    } else {
+        amount = parseInt(amountStr, 10);
+    }
+
+    if (isNaN(amount) || amount <= 0) {
+        return { success: false, message: '❌ Please enter a valid number of points to transfer (minimum **1 🪙 Point**)!' };
+    }
+
+    if (amount > balance) {
+        return {
+            success: false,
+            message: `❌ You do not have enough points! Your balance: **${balance.toLocaleString()} 🪙 Points**.`
+        };
+    }
+
+    // Deduct and credit
+    senderUser.points = Math.max(0, senderUser.points - amount);
+    targetUser.points = (targetUser.points || 0) + amount;
+    saveLevels();
+
+    const embed = new EmbedBuilder()
+        .setTitle('💸 Points Transfer Completed')
+        .setColor(0x57F287)
+        .setDescription(`**${senderMember.displayName}** transferred **${amount.toLocaleString()} 🪙 Points** to **${targetMember.displayName}**!`)
+        .addFields(
+            { name: `📤 ${senderMember.displayName}'s New Balance`, value: `**${senderUser.points.toLocaleString()}** 🪙 Points`, inline: true },
+            { name: `📥 ${targetMember.displayName}'s New Balance`, value: `**${targetUser.points.toLocaleString()}** 🪙 Points`, inline: true }
+        )
+        .setFooter({ text: 'null Economy • Transfer recorded instantly' })
+        .setTimestamp();
+
+    return {
+        success: true,
+        embed,
+        message: `💸 **Transfer Successful!** <@${senderMember.id}> sent **${amount.toLocaleString()} 🪙 Points** to <@${targetMember.id}>!\n💰 Your new balance: **${senderUser.points.toLocaleString()} 🪙 Points**`
+    };
+}
+
 // Builds the Points Wallet Embed
 function createPointsEmbed(member, userData) {
     const theme = CARD_THEMES[userData.equippedTheme] || CARD_THEMES.arcane;
@@ -2285,9 +2345,9 @@ function createPointsEmbed(member, userData) {
             { name: '🎖️ Badges Unlocked', value: `${badges.length} / ${BADGES_CONFIG.length} (\`/badges\`)`, inline: true },
             { name: '💬 Texts Sent', value: `**${(userData.messages || 0).toLocaleString()}**`, inline: true },
             { name: '🎙️ Call Time', value: `**${formatVoiceDuration(userData.voiceMinutes || 0)}**`, inline: true },
-            { name: '💡 How to Earn & Play', value: '• **Chat & Calls:** 5-10 pts per text, 5-8 pts/min in call\n• **`/daily`:** Daily rewards with streak multiplier!\n• **🎰 Casino Games:** `/coinflip`, `/slots`, `/blackjack`\n• **Shop:** Spend points in `/shop` for crazy animated cards!', inline: false }
+            { name: '💡 How to Earn & Play', value: '• **Chat & Calls:** 5-10 pts per text, 5-8 pts/min in call\n• **`/daily`:** Daily rewards with streak multiplier!\n• **🎰 Casino Games:** `/coinflip`, `/slots`, `/blackjack`\n• **Shop:** Spend points in `/shop` for crazy animated cards!\n• **💸 Transfer:** Send points to friends with `/pay <user> <amount>`', inline: false }
         )
-        .setFooter({ text: 'null Economy • /shop • /coinflip • /slots • /blackjack • /daily' })
+        .setFooter({ text: 'null Economy • /shop • /coinflip • /slots • /blackjack • /daily • /pay' })
         .setTimestamp();
 
     return embed;
@@ -2855,7 +2915,7 @@ function createHelpEmbed() {
         .setColor(0x5865F2)
         .addFields(
             { name: '🏆 Leveling & Rank (Arcade System)', value: '`/rank [user]` (or `!rank`) — Check rank card (Level, XP, texts sent, call time, points)\n`/setbio <text>` (or `!bio <text>`) — Set a custom tagline/quote on your rank card!\n`/badges [user]` (or `!badges`) — View unlocked achievements & badges!\n`/leaderboard [type]` (or `!top`) — Server leaderboard (Top 10 by XP or Points)' },
-            { name: '🪙 Economy & Card Themes Shop', value: '`/shop` (or `!shop`) — Browse shop & preview themes live with interactive dropdown!\n`/preview <theme>` (or `!preview <theme>`) — Generate live preview (Animated GIFs & static)\n`/buy <theme>` (or `!buy <theme>`) — Purchase a theme (Budget from 120 pts to Animated GIF at 2,500 pts)\n`/equip <theme>` (or `!equip <theme>`) — Equip an owned card theme\n`/daily` (or `!daily`) — Claim daily reward with streak multiplier & milestone rewards!\n`/points [user]` (or `!points`) — View wallet, points, streak, and owned themes' },
+            { name: '🪙 Economy & Card Themes Shop', value: '`/shop` (or `!shop`) — Browse shop & preview themes live with interactive dropdown!\n`/preview <theme>` (or `!preview <theme>`) — Generate live preview (Animated GIFs & static)\n`/buy <theme>` (or `!buy <theme>`) — Purchase a theme (Budget from 120 pts to Animated GIF at 2,500 pts)\n`/equip <theme>` (or `!equip <theme>`) — Equip an owned card theme\n`/daily` (or `!daily`) — Claim daily reward with streak multiplier & milestone rewards!\n`/points [user]` (or `!points`) — View wallet, points, streak, and owned themes\n`/pay <user> <amount>` (or `!pay`) — Transfer coins/points to another member!' },
             { name: '🎰 Casino & Gambling Minigames', value: '`/coinflip <amount> <heads/tails>` (or `!cf`) — 50/50 double-or-nothing coinflip!\n`/slots <amount>` (or `!slots`) — Spin slot reels for up to 25x Lucky 7 jackpot!\n`/blackjack <amount>` (or `!bj`) — Interactive blackjack table against dealer with buttons (Hit, Stand, Double)!' },
             { name: '🎮 Arcade Minigames', value: '`/hangman [category]` (or `!hangman`) — Interactive Hangman game with real words & ASCII art!\n• Type single letters in chat (e.g. `e`, `a`) or full words to guess!\n• Earn points & XP for finding letters and winning!\n`/hangman-stop` (or `!forfeit`) — Forfeit active game' },
             { name: '🧠 AI Chat & Web Search', value: '• **Mention `@null`** in any channel to chat!\n• **Reply to null\'s messages** to continue the conversation!\n• `/ask <question> [image]` — Ask AI (Groq for text, Gemini Vision for images/GIFs)\n• Remembers **50 messages** of history and knows server members & roles!' },
@@ -3362,6 +3422,19 @@ const slashCommands = [
                 .setRequired(false)
         ),
     new SlashCommandBuilder()
+        .setName('pay')
+        .setDescription('Transfer coins/points to another member in the server')
+        .addUserOption(option =>
+            option.setName('user')
+                .setDescription('The member you want to transfer points to')
+                .setRequired(true)
+        )
+        .addStringOption(option =>
+            option.setName('amount')
+                .setDescription('Amount of points to transfer (e.g. 50, 100, all)')
+                .setRequired(true)
+        ),
+    new SlashCommandBuilder()
         .setName('hangman')
         .setDescription('Start an interactive Hangman word guessing game in this channel!')
         .addStringOption(option =>
@@ -3554,6 +3627,35 @@ client.on('messageCreate', async (message) => {
             const userData = getOrCreateUser(message.guild.id, targetUser.id, targetMember.displayName || targetUser.username);
             const embed = createPointsEmbed(targetMember, userData);
             return message.reply({ embeds: [embed] }).catch(() => {});
+        }
+
+        // Transfer points: !pay @user <amount> / !transfer @user <amount> / !give @user <amount>
+        if (lower.startsWith('!pay') || lower.startsWith('!transfer') || lower.startsWith('!give') || lower.startsWith('!send')) {
+            const firstWord = lower.split(/\s+/)[0];
+            if (['!pay', '!transfer', '!give', '!send'].includes(firstWord)) {
+                const parts = message.content.trim().split(/\s+/).slice(1);
+                const targetUser = message.mentions.users.first();
+                if (!targetUser) {
+                    return message.reply('💡 **Usage:** `!pay @user <amount>` (e.g. `!pay @member 100` or `!pay @member all`).').catch(() => {});
+                }
+
+                const targetMember = await message.guild.members.fetch(targetUser.id).catch(() => null);
+                if (!targetMember) {
+                    return message.reply('❌ Could not find that member in this server!').catch(() => {});
+                }
+
+                const amountToken = parts.find(p => !p.includes(targetUser.id) && (!isNaN(parseInt(p, 10)) || ['all', 'max'].includes(p.toLowerCase())));
+                if (!amountToken) {
+                    return message.reply('💡 **Usage:** `!pay @user <amount>` (e.g. `!pay @member 100` or `!pay @member all`).').catch(() => {});
+                }
+
+                const res = handleTransferPoints(message.guild.id, message.member, targetMember, amountToken);
+                if (res.embed) {
+                    return message.reply({ embeds: [res.embed] }).catch(() => {});
+                } else {
+                    return message.reply(res.message).catch(() => {});
+                }
+            }
         }
 
         if (lower === '!bio' || lower.startsWith('!bio ') || lower === '!setbio' || lower.startsWith('!setbio ') || lower === '!clearbio') {
@@ -4073,6 +4175,31 @@ client.on('interactionCreate', async (interaction) => {
 
         const embed = createPointsEmbed(targetMember, userData);
         return interaction.reply({ embeds: [embed] });
+    }
+
+    // --- /pay ---
+    if (commandName === 'pay' || commandName === 'transfer') {
+        if (!interaction.guild) {
+            return interaction.reply({ content: '❌ Coins transfer is server-specific! Please run this command inside a server.', ephemeral: true });
+        }
+
+        const targetUser = interaction.options.getUser('user');
+        if (!targetUser) {
+            return interaction.reply({ content: '❌ Please specify a member to transfer points to!', ephemeral: true });
+        }
+
+        const targetMember = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
+        if (!targetMember) {
+            return interaction.reply({ content: '❌ Could not find that member in this server!', ephemeral: true });
+        }
+
+        const amountStr = interaction.options.getString('amount');
+        const res = handleTransferPoints(interaction.guild.id, interaction.member, targetMember, amountStr);
+        if (res.embed) {
+            return interaction.reply({ embeds: [res.embed] });
+        } else {
+            return interaction.reply({ content: res.message, ephemeral: !res.success });
+        }
     }
 
     // --- /badges ---
