@@ -2,6 +2,8 @@ require('dotenv').config();
 const v8 = require('v8');
 const vm = require('vm');
 const os = require('os');
+const fs = require('fs');
+const path = require('path');
 
 // Optimize V8 memory footprint & expose in-process GC
 try {
@@ -1005,6 +1007,268 @@ client.on('voiceStateUpdate', (oldState, newState) => {
     }
 });
 
+// ==========================================
+// 🏆 ARCADE-STYLE LEVELING & RANK SYSTEM
+// (Texts Sent, Minutes in Call, Level & XP)
+// ==========================================
+
+const LEVELS_FILE = path.join(__dirname, 'levels.json');
+let levelsCache = {};
+let levelsDirty = false;
+
+// Safe synchronous load of levels database
+function loadLevels() {
+    try {
+        if (fs.existsSync(LEVELS_FILE)) {
+            const raw = fs.readFileSync(LEVELS_FILE, 'utf8');
+            levelsCache = JSON.parse(raw);
+        }
+    } catch (e) {
+        console.warn('[Leveling] Could not load levels.json, starting fresh:', e.message);
+        levelsCache = {};
+    }
+}
+
+// Safe synchronous save
+function saveLevels() {
+    if (!levelsDirty) return;
+    try {
+        fs.writeFileSync(LEVELS_FILE, JSON.stringify(levelsCache, null, 2), 'utf8');
+        levelsDirty = false;
+    } catch (e) {
+        console.error('[Leveling] Failed to save levels.json:', e.message);
+    }
+}
+
+// Initial load
+loadLevels();
+
+// Debounced auto-save every 15 seconds if data changed
+setInterval(saveLevels, 15000).unref();
+process.on('exit', saveLevels);
+
+// Helper to get or initialize a user's record
+function getOrCreateUser(guildId, userId, username = 'Unknown') {
+    const key = `${guildId}_${userId}`;
+    if (!levelsCache[key]) {
+        levelsCache[key] = {
+            userId: userId,
+            guildId: guildId,
+            xp: 0,
+            messages: 0,
+            voiceMinutes: 0,
+            lastTextXp: 0,
+            username: username
+        };
+        levelsDirty = true;
+    } else if (username && username !== 'Unknown') {
+        levelsCache[key].username = username;
+    }
+    return levelsCache[key];
+}
+
+// Arcade / Arcane leveling formula:
+// XP needed to advance from level L to L+1: 5 * L^2 + 50 * L + 100
+function getXpForNextLevel(level) {
+    return 5 * (level * level) + (50 * level) + 100;
+}
+
+// Returns { level, currentXp, neededXp, percent }
+function calculateLevelData(totalXp) {
+    let xp = Math.max(0, totalXp || 0);
+    let level = 0;
+    while (true) {
+        const needed = getXpForNextLevel(level);
+        if (xp < needed) {
+            return {
+                level,
+                currentXp: xp,
+                neededXp: needed,
+                percent: Math.min(Math.round((xp / needed) * 100), 100)
+            };
+        }
+        xp -= needed;
+        level++;
+    }
+}
+
+// Calculates rank (#1, #2, etc.) for a user within a specific guild
+function getUserRank(guildId, targetUserId) {
+    const guildEntries = Object.values(levelsCache)
+        .filter(entry => entry.guildId === guildId && ((entry.xp || 0) > 0 || (entry.messages || 0) > 0 || (entry.voiceMinutes || 0) > 0))
+        .sort((a, b) => (b.xp || 0) - (a.xp || 0));
+
+    const totalRanked = Math.max(guildEntries.length, 1);
+    const index = guildEntries.findIndex(e => e.userId === targetUserId);
+    const rank = index !== -1 ? index + 1 : totalRanked;
+    return { rank, totalRanked };
+}
+
+// Returns top ranked users in the guild
+function getGuildLeaderboard(guildId, limit = 10) {
+    return Object.values(levelsCache)
+        .filter(entry => entry.guildId === guildId && ((entry.xp || 0) > 0 || (entry.messages || 0) > 0 || (entry.voiceMinutes || 0) > 0))
+        .sort((a, b) => (b.xp || 0) - (a.xp || 0))
+        .slice(0, limit);
+}
+
+// Progress bar string: ▰▰▰▰▰▰▱▱▱▱
+function createProgressBar(current, max, size = 12) {
+    const ratio = Math.min(Math.max(current / max, 0), 1);
+    const filled = Math.round(size * ratio);
+    const empty = size - filled;
+    return '▰'.repeat(filled) + '▱'.repeat(empty);
+}
+
+// Human readable voice call minutes formatting: "3h 45m (225 min)"
+function formatVoiceDuration(minutes) {
+    if (!minutes || minutes <= 0) return '0 mins';
+    const h = Math.floor(minutes / 60);
+    const m = minutes % 60;
+    if (h > 0) {
+        return `${h}h ${m}m (${minutes.toLocaleString()} mins)`;
+    }
+    return `${m} mins`;
+}
+
+// Awards text message XP & increments message counter
+function trackMessageForLeveling(message) {
+    if (!message.guild || message.author.bot) return;
+
+    const user = getOrCreateUser(message.guild.id, message.author.id, message.member?.displayName || message.author.username);
+    user.messages = (user.messages || 0) + 1;
+    levelsDirty = true;
+
+    const now = Date.now();
+    // 60-second cooldown between message XP drops to prevent spam farming
+    if (now - (user.lastTextXp || 0) >= 60000) {
+        const xpGain = Math.floor(Math.random() * 11) + 15; // 15 - 25 XP
+        const oldLevel = calculateLevelData(user.xp).level;
+        user.xp = (user.xp || 0) + xpGain;
+        user.lastTextXp = now;
+        levelsDirty = true;
+
+        const newLevel = calculateLevelData(user.xp).level;
+        if (newLevel > oldLevel) {
+            message.channel.send({
+                content: `🎉 **Level Up!** <@${message.author.id}>, you advanced to **Level ${newLevel}**! ⭐`
+            }).catch(() => {});
+        }
+    }
+}
+
+// Background Voice Call Tracker (Ticks every 60 seconds)
+// Awards call minutes and voice XP for active members in voice channels
+setInterval(() => {
+    try {
+        if (!client.guilds || client.guilds.cache.size === 0) return;
+
+        for (const [guildId, guild] of client.guilds.cache) {
+            for (const [channelId, channel] of guild.channels.cache) {
+                if (channel.isVoiceBased() && channel.id !== guild.afkChannelId) {
+                    const members = channel.members;
+                    if (!members || members.size === 0) continue;
+
+                    for (const [memberId, member] of members) {
+                        if (member.user.bot) continue;
+
+                        const isDeaf = member.voice?.deaf || member.voice?.selfDeaf;
+                        if (isDeaf) continue;
+
+                        const user = getOrCreateUser(guild.id, member.id, member.displayName || member.user.username);
+                        user.voiceMinutes = (user.voiceMinutes || 0) + 1;
+
+                        const xpGain = Math.floor(Math.random() * 6) + 10; // 10 - 15 XP per minute
+                        const oldLevel = calculateLevelData(user.xp).level;
+                        user.xp = (user.xp || 0) + xpGain;
+                        levelsDirty = true;
+
+                        const newLevel = calculateLevelData(user.xp).level;
+                        if (newLevel > oldLevel) {
+                            if (channel.send) {
+                                channel.send({
+                                    content: `🎉 **Level Up!** <@${member.id}>, your time in call elevated you to **Level ${newLevel}**! ⭐`
+                                }).catch(() => {});
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } catch (e) {
+        console.warn('[Leveling Voice Tick Notice]:', e.message);
+    }
+}, 60000).unref();
+
+// Builds the Arcade-style Rank Card Embed
+function createRankCardEmbed(member, userData) {
+    const totalXp = userData.xp || 0;
+    const levelData = calculateLevelData(totalXp);
+    const { rank, totalRanked } = getUserRank(member.guild.id, member.id);
+
+    const progressBar = createProgressBar(levelData.currentXp, levelData.neededXp, 12);
+    const color = member.displayColor || 0x5865F2;
+
+    const embed = new EmbedBuilder()
+        .setAuthor({
+            name: `${member.displayName}'s Rank Profile`,
+            iconURL: member.user.displayAvatarURL({ dynamic: true })
+        })
+        .setColor(color)
+        .setThumbnail(member.user.displayAvatarURL({ dynamic: true, size: 256 }))
+        .addFields(
+            { name: '🏆 Server Rank', value: `**#${rank}** of ${totalRanked}`, inline: true },
+            { name: '⭐ Level', value: `**Level ${levelData.level}**`, inline: true },
+            { name: '✨ Total XP', value: `**${totalXp.toLocaleString()} XP**`, inline: true },
+            {
+                name: `📈 Progress to Level ${levelData.level + 1}`,
+                value: `${progressBar} **${levelData.percent}%**\n\`${levelData.currentXp.toLocaleString()} / ${levelData.neededXp.toLocaleString()} XP\` *(${(levelData.neededXp - levelData.currentXp).toLocaleString()} XP to next level)*`,
+                inline: false
+            },
+            { name: '💬 Texts Sent', value: `**${(userData.messages || 0).toLocaleString()}** messages`, inline: true },
+            { name: '🎙️ Minutes in Call', value: `**${formatVoiceDuration(userData.voiceMinutes || 0)}**`, inline: true }
+        )
+        .setFooter({ text: 'null Leveling • Send messages & join voice calls to level up!' })
+        .setTimestamp();
+
+    return embed;
+}
+
+// Builds the Server Leaderboard Embed
+function createLeaderboardEmbed(guild, requestingMember) {
+    const topUsers = getGuildLeaderboard(guild.id, 10);
+    const embed = new EmbedBuilder()
+        .setTitle(`🏆 ${guild.name} — Leveling Leaderboard`)
+        .setColor(0x5865F2)
+        .setThumbnail(guild.iconURL({ dynamic: true }) || null);
+
+    if (topUsers.length === 0) {
+        embed.setDescription('No members have earned XP yet! Start texting and joining voice calls to be #1!');
+        return embed;
+    }
+
+    const medals = ['🥇', '🥈', '🥉'];
+    const lines = topUsers.map((u, i) => {
+        const medal = medals[i] || `\`#${i + 1}\``;
+        const levelData = calculateLevelData(u.xp || 0);
+        const name = u.username || `<@${u.userId}>`;
+        return `${medal} **${name}** • **Level ${levelData.level}** (${(u.xp || 0).toLocaleString()} XP)\n   ↳ 💬 ${(u.messages || 0).toLocaleString()} texts • 🎙️ ${formatVoiceDuration(u.voiceMinutes || 0)}`;
+    });
+
+    embed.setDescription(lines.join('\n\n'));
+
+    if (requestingMember) {
+        const { rank, totalRanked } = getUserRank(guild.id, requestingMember.id);
+        const userRec = getOrCreateUser(guild.id, requestingMember.id, requestingMember.displayName);
+        const userLevel = calculateLevelData(userRec.xp || 0).level;
+        embed.setFooter({
+            text: `Your Rank: #${rank} of ${totalRanked} (Level ${userLevel} • ${(userRec.xp || 0).toLocaleString()} XP)`
+        });
+    }
+
+    return embed;
+}
+
 // Slash Command Definitions
 const slashCommands = [
     new SlashCommandBuilder()
@@ -1028,6 +1292,17 @@ const slashCommands = [
                 .setDescription('Optional image or GIF for Gemini Vision analysis')
                 .setRequired(false)
         ),
+    new SlashCommandBuilder()
+        .setName('rank')
+        .setDescription('Check your or another member\'s level, XP, texts sent, and minutes in call')
+        .addUserOption(option =>
+            option.setName('user')
+                .setDescription('The member whose rank card you want to view (defaults to yourself)')
+                .setRequired(false)
+        ),
+    new SlashCommandBuilder()
+        .setName('leaderboard')
+        .setDescription('View the server leveling leaderboard (Top 10 members by Level & XP)'),
     new SlashCommandBuilder()
         .setName('pause')
         .setDescription('Pause current music playback'),
@@ -1128,6 +1403,26 @@ client.once('clientReady', onReady);
 // ==========================================
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
+
+    // 1. Leveling Activity Tracking (Increments texts sent & awards message XP)
+    if (message.guild) {
+        trackMessageForLeveling(message);
+
+        // Fast text commands fallback: !rank / !level / !leaderboard / !top
+        const lower = message.content.trim().toLowerCase();
+        if (lower === '!rank' || lower === '!level' || lower.startsWith('!rank ') || lower.startsWith('!level ')) {
+            const targetUser = message.mentions.users.first() || message.author;
+            const targetMember = await message.guild.members.fetch(targetUser.id).catch(() => null) || message.member;
+            const userData = getOrCreateUser(message.guild.id, targetUser.id, targetMember.displayName || targetUser.username);
+            const cardEmbed = createRankCardEmbed(targetMember, userData);
+            return message.reply({ embeds: [cardEmbed] }).catch(() => {});
+        }
+
+        if (lower === '!leaderboard' || lower === '!top' || lower === '!lb') {
+            const lbEmbed = createLeaderboardEmbed(message.guild, message.member);
+            return message.reply({ embeds: [lbEmbed] }).catch(() => {});
+        }
+    }
 
     // Check if bot was mentioned (@null)
     const isMentioned = message.mentions.users.has(client.user.id) && !message.mentions.everyone && !message.content.includes('@here');
@@ -1337,6 +1632,31 @@ client.on('interactionCreate', async (interaction) => {
         } catch (err) {
             await interaction.editReply({ content: `⚠️ AI error: ${err.message}` });
         }
+    }
+
+    // --- /rank ---
+    if (commandName === 'rank') {
+        if (!interaction.guild) {
+            return interaction.reply({ content: '❌ Leveling is server-specific! Please run this command inside a server.', ephemeral: true });
+        }
+
+        const targetUser = interaction.options.getUser('user') || interaction.user;
+        const targetMember = await interaction.guild.members.fetch(targetUser.id).catch(() => null) || interaction.member;
+
+        const userData = getOrCreateUser(interaction.guild.id, targetUser.id, targetMember.displayName || targetUser.username);
+        const cardEmbed = createRankCardEmbed(targetMember, userData);
+
+        return interaction.reply({ embeds: [cardEmbed] });
+    }
+
+    // --- /leaderboard ---
+    if (commandName === 'leaderboard') {
+        if (!interaction.guild) {
+            return interaction.reply({ content: '❌ Leaderboard is server-specific! Please run this command inside a server.', ephemeral: true });
+        }
+
+        const lbEmbed = createLeaderboardEmbed(interaction.guild, interaction.member);
+        return interaction.reply({ embeds: [lbEmbed] });
     }
 
     // --- /play ---
@@ -1588,7 +1908,8 @@ client.on('interactionCreate', async (interaction) => {
             .setDescription('Ultra-lightweight, 24/7 high-fidelity music bot with interactive buttons and an AI brain.')
             .setColor(0x5865F2)
             .addFields(
-                { name: '🧠 AI Chat & Web Search', value: '• **Mention `@null`** in any channel to chat!\n• **Reply to null\'s messages** to continue the conversation!\n• `/ask <question>` — Ask the AI with live Google Search!\n• Remembers **50 messages** of history and knows server members & roles!' },
+                { name: '🏆 Leveling & Rank (Arcade System)', value: '`/rank [user]` (or `!rank`) — Check your or another member\'s rank card (Level, XP, texts sent, minutes in call)\n`/leaderboard` (or `!top`) — View the server leveling leaderboard (Top 10 members)' },
+                { name: '🧠 AI Chat & Web Search', value: '• **Mention `@null`** in any channel to chat!\n• **Reply to null\'s messages** to continue the conversation!\n• `/ask <question> [image]` — Ask AI (Groq for text, Gemini Vision for images/GIFs)\n• Remembers **50 messages** of history and knows server members & roles!' },
                 { name: '🎶 Music Playback', value: '`/play <song>` — Play songs or playlists (YouTube, Spotify, SoundCloud)\n`/pause` — Pause music\n`/resume` — Resume music\n`/skip` — Skip to next song\n`/stop` — Stop playback & disconnect' },
                 { name: '📜 Queue & Audio', value: '`/nowplaying` — Live song display with progress bar & buttons\n`/queue` — Show upcoming songs\n`/shuffle` — Shuffle the queue\n`/volume <1-100>` — Change playback volume' },
                 { name: '⚙️ Utilities', value: '`/null` — Bot status, memory diagnostics & AI brain info\n`/ping` — Check latency\n`/help` — Display this guide' }
