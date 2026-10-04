@@ -1349,6 +1349,7 @@ function getOrCreateUser(guildId, userId, username = 'Unknown') {
             inventory: ['arcane'],
             equippedTheme: 'arcane',
             customText: '',
+            dailyStreak: 0,
             lastTextXp: 0,
             lastDaily: 0,
             username: username
@@ -1360,6 +1361,7 @@ function getOrCreateUser(guildId, userId, username = 'Unknown') {
         if (!levelsCache[key].inventory) levelsCache[key].inventory = ['arcane'];
         if (!levelsCache[key].equippedTheme) levelsCache[key].equippedTheme = 'arcane';
         if (levelsCache[key].customText === undefined) levelsCache[key].customText = '';
+        if (levelsCache[key].dailyStreak === undefined) levelsCache[key].dailyStreak = 0;
         if (username && username !== 'Unknown' && levelsCache[key].username !== username) {
             levelsCache[key].username = username;
             levelsDirty = true;
@@ -1529,6 +1531,24 @@ setInterval(() => {
     }
 }, 60000).unref();
 
+// ==========================================
+// 🎖️ BADGES & ACHIEVEMENTS SYSTEM
+// ==========================================
+const BADGES_CONFIG = [
+    { id: 'streak', emoji: '🔥', name: 'Streak Master', desc: '7+ Daily Streak in a row', check: (u) => (u.dailyStreak || 0) >= 7 },
+    { id: 'voice', emoji: '🎙️', name: 'Voice Legend', desc: '20+ Hours in voice calls', check: (u) => (u.voiceMinutes || 0) >= 1200 },
+    { id: 'chat', emoji: '💬', name: 'Chatterbox', desc: '500+ text messages sent', check: (u) => (u.messages || 0) >= 500 },
+    { id: 'collector', emoji: '🛍️', name: 'Theme Collector', desc: 'Own 3+ shop themes', check: (u) => (u.inventory || []).length >= 3 },
+    { id: 'highroller', emoji: '🎰', name: 'High Roller', desc: 'Hold 1,500+ points', check: (u) => (u.points || 0) >= 1500 },
+    { id: 'veteran', emoji: '⭐', name: 'Level 10 Veteran', desc: 'Reach Level 10', check: (u) => calculateLevelData(u.xp || 0).level >= 10 },
+    { id: 'royalty', emoji: '👑', name: 'Server Royalty', desc: 'Ranked in the Server Top 3', check: (u, rank) => rank <= 3 }
+];
+
+function getUserBadges(userData, rank = 999) {
+    if (!userData) return [];
+    return BADGES_CONFIG.filter(b => b.check(userData, rank));
+}
+
 // Draws a single frame of the authentic Arcane-style graphical rank card onto ctx
 function drawRankCardContent(ctx, width, height, member, userData, levelData, rank, totalRanked, theme, avatarImg, frameIndex = 0, totalFrames = 8) {
     const accentColor = theme.accent;
@@ -1660,11 +1680,19 @@ function drawRankCardContent(ctx, width, height, member, userData, levelData, ra
 
     ctx.restore();
 
-    // 4. Theme Badge (Top Right)
+    // 4. Theme Badge & Badges (Top Right)
     ctx.fillStyle = theme.accent;
     ctx.font = 'bold 15px "Segoe UI", Arial, sans-serif';
     ctx.textAlign = 'right';
     ctx.fillText(`${theme.emoji} ${theme.name}`, 820, 32);
+
+    // Unlocked Badges icons (under theme badge)
+    const userBadges = getUserBadges(userData, rank);
+    if (userBadges.length > 0) {
+        ctx.font = '16px "Segoe UI", Arial, sans-serif';
+        const badgeIcons = userBadges.slice(0, 5).map(b => b.emoji).join(' ');
+        ctx.fillText(badgeIcons, 820, 56);
+    }
     ctx.textAlign = 'left';
 
     // 5. User Avatar
@@ -1713,6 +1741,7 @@ function drawRankCardContent(ctx, width, height, member, userData, levelData, ra
     const displayName = member.displayName || member.user?.username || 'User';
     const cleanUser = displayName.startsWith('@') ? displayName : `@${displayName}`;
     const customBio = (userData.customText || '').trim();
+    const streakStr = (userData.dailyStreak || 0) > 1 ? `   •   🔥 ${userData.dailyStreak}d` : '';
 
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
@@ -1744,10 +1773,10 @@ function drawRankCardContent(ctx, width, height, member, userData, levelData, ra
         const rankText = rank ? `   Rank: #${rank}` : '';
         ctx.fillText(`Level: ${levelData.level}   XP: ${formatK(levelData.currentXp)} / ${formatK(levelData.neededXp)}${rankText}`, 160, 116);
 
-        // Stats Row 2: Texts sent, Minutes in call, Points
+        // Stats Row 2: Texts sent, Minutes in call, Points, Streak
         ctx.fillStyle = theme.textSecondary;
         ctx.font = '500 15px "Segoe UI", Arial, sans-serif';
-        ctx.fillText(`Texts: ${(userData.messages || 0).toLocaleString()}   •   In Call: ${formatVoiceDuration(userData.voiceMinutes || 0)}   •   Points: ${(userData.points || 0).toLocaleString()} 🪙`, 160, 144);
+        ctx.fillText(`Texts: ${(userData.messages || 0).toLocaleString()}   •   In Call: ${formatVoiceDuration(userData.voiceMinutes || 0)}   •   Points: ${(userData.points || 0).toLocaleString()} 🪙${streakStr}`, 160, 144);
     } else {
         // Default layout without bio
         ctx.fillStyle = theme.textPrimary;
@@ -1770,10 +1799,10 @@ function drawRankCardContent(ctx, width, height, member, userData, levelData, ra
         const rankText = rank ? `   Rank: #${rank}` : '';
         ctx.fillText(`Level: ${levelData.level}   XP: ${formatK(levelData.currentXp)} / ${formatK(levelData.neededXp)}${rankText}`, 160, 112);
 
-        // Stats Row 2: Texts sent, Minutes in call, Points
+        // Stats Row 2: Texts sent, Minutes in call, Points, Streak
         ctx.fillStyle = theme.textSecondary;
         ctx.font = '500 16px "Segoe UI", Arial, sans-serif';
-        ctx.fillText(`Texts: ${(userData.messages || 0).toLocaleString()}   •   In Call: ${formatVoiceDuration(userData.voiceMinutes || 0)}   •   Points: ${(userData.points || 0).toLocaleString()} 🪙`, 160, 142);
+        ctx.fillText(`Texts: ${(userData.messages || 0).toLocaleString()}   •   In Call: ${formatVoiceDuration(userData.voiceMinutes || 0)}   •   Points: ${(userData.points || 0).toLocaleString()} 🪙${streakStr}`, 160, 142);
     }
 
     // 7. Progress Bar (Pill Capsule with themed background and fill)
@@ -1920,9 +1949,14 @@ function createRankCardEmbed(member, userData) {
         },
         { name: '💬 Texts Sent', value: `**${(userData.messages || 0).toLocaleString()}** messages`, inline: true },
         { name: '🎙️ Minutes in Call', value: `**${formatVoiceDuration(userData.voiceMinutes || 0)}**`, inline: true },
-        { name: '🪙 Points Balance', value: `**${(userData.points || 0).toLocaleString()}** Points`, inline: true }
+        { name: '🪙 Points Balance', value: `**${(userData.points || 0).toLocaleString()}** Points`, inline: true },
+        { name: '🔥 Daily Streak', value: `**${userData.dailyStreak || 0}** Days`, inline: true },
+        { name: '🎖️ Badges Unlocked', value: (() => {
+            const bList = getUserBadges(userData, rank);
+            return bList.length > 0 ? bList.map(b => `${b.emoji} **${b.name}**`).join(' • ') : 'None yet (Use `/badges`)';
+        })(), inline: false }
     )
-    .setFooter({ text: `Theme: ${theme.name} • /setbio to set quote • Earn points via chatting, calls & /daily!` })
+    .setFooter({ text: `Theme: ${theme.name} • /setbio to set quote • /badges to view achievements` })
     .setTimestamp();
 
     return embed;
@@ -2173,7 +2207,7 @@ function handleEquipTheme(guildId, userId, username, themeKey) {
     };
 }
 
-// Handles daily 200 points reward (24h cooldown)
+// Handles daily points reward with streak multiplier & milestones
 function handleDailyReward(guildId, userId, username) {
     const user = getOrCreateUser(guildId, userId, username);
     const now = Date.now();
@@ -2186,18 +2220,43 @@ function handleDailyReward(guildId, userId, username) {
         const remMins = Math.floor((remainingMs % (1000 * 60 * 60)) / (1000 * 60));
         return {
             claimed: false,
-            message: `⏳ You already claimed your daily reward today! Come back in **${remHours}h ${remMins}m**.`
+            message: `⏳ You already claimed your daily reward today! Come back in **${remHours}h ${remMins}m**.\n🔥 Current Streak: **${user.dailyStreak || 0} Days**`
         };
     }
 
-    const DAILY_POINTS = 200;
-    user.points = (user.points || 0) + DAILY_POINTS;
+    const STREAK_WINDOW_MS = 48 * 60 * 60 * 1000;
+    if (user.lastDaily && elapsed < STREAK_WINDOW_MS) {
+        user.dailyStreak = (user.dailyStreak || 0) + 1;
+    } else {
+        user.dailyStreak = 1;
+    }
+
+    const basePoints = 200;
+    const streakBonus = Math.min((user.dailyStreak - 1) * 25, 300);
+    let milestoneBonus = 0;
+    let milestoneMsg = '';
+
+    if (user.dailyStreak === 7) {
+        milestoneBonus = 150;
+        milestoneMsg = '\n🔥 **7-DAY STREAK ACHIEVED!** Unlocked **Streak Master** badge +150 bonus points! 🏆';
+    } else if (user.dailyStreak === 14) {
+        milestoneBonus = 300;
+        milestoneMsg = '\n🔥 **14-DAY STREAK MILESTONE!** +300 bonus points! 🏆';
+    } else if (user.dailyStreak === 30) {
+        milestoneBonus = 1000;
+        milestoneMsg = '\n🔥 **30-DAY GODLY STREAK!** +1,000 bonus points! 👑';
+    }
+
+    const totalPoints = basePoints + streakBonus + milestoneBonus;
+    user.points = (user.points || 0) + totalPoints;
     user.lastDaily = now;
     saveLevels();
 
+    const streakNotice = streakBonus > 0 ? ` (Base: 200 + Streak bonus: +${streakBonus})` : '';
+
     return {
         claimed: true,
-        message: `🎁 **Daily Reward Claimed!** You received **+${DAILY_POINTS} 🪙 Points**!\n💰 Balance: **${user.points.toLocaleString()} 🪙 Points**\nBrowse new themes in \`/shop\`!`
+        message: `🎁 **Daily Reward Claimed!** You received **+${totalPoints} 🪙 Points**!${streakNotice}\n🔥 **Daily Streak:** **${user.dailyStreak} Days**!${milestoneMsg}\n💰 Balance: **${user.points.toLocaleString()} 🪙 Points**\nBrowse new themes in \`/shop\` or test your luck in \`/slots\`!`
     };
 }
 
@@ -2207,6 +2266,8 @@ function createPointsEmbed(member, userData) {
     const inventory = userData.inventory || ['arcane'];
     const totalThemes = Object.keys(CARD_THEMES).length;
     const levelData = calculateLevelData(userData.xp || 0);
+    const { rank } = getUserRank(member.guild.id, member.id);
+    const badges = getUserBadges(userData, rank);
 
     const embed = new EmbedBuilder()
         .setAuthor({
@@ -2217,17 +2278,592 @@ function createPointsEmbed(member, userData) {
         .setThumbnail(member.user.displayAvatarURL({ dynamic: true, size: 256 }))
         .addFields(
             { name: '🪙 Points Balance', value: `**${(userData.points || 0).toLocaleString()}** Points`, inline: true },
+            { name: '🔥 Daily Streak', value: `**${userData.dailyStreak || 0}** Days`, inline: true },
             { name: '🎨 Equipped Theme', value: `${theme.emoji} **${theme.name}**`, inline: true },
             { name: '🎒 Themes Owned', value: `**${inventory.length}** / ${totalThemes} themes`, inline: true },
             { name: '⭐ Level & Rank', value: `Level **${levelData.level}** (${(userData.xp || 0).toLocaleString()} XP)`, inline: true },
+            { name: '🎖️ Badges Unlocked', value: `${badges.length} / ${BADGES_CONFIG.length} (\`/badges\`)`, inline: true },
             { name: '💬 Texts Sent', value: `**${(userData.messages || 0).toLocaleString()}**`, inline: true },
             { name: '🎙️ Call Time', value: `**${formatVoiceDuration(userData.voiceMinutes || 0)}**`, inline: true },
-            { name: '💡 How to Earn More Points', value: '• **Chat in channels:** 5 - 10 pts per message\n• **Join Voice Channels:** 5 - 8 pts per minute\n• **Level Up:** `Level * 50` bonus pts!\n• **`/daily`:** Claim 200 pts every 24h\n• Spend points in `/shop` for crazy & cool card themes!', inline: false }
+            { name: '💡 How to Earn & Play', value: '• **Chat & Calls:** 5-10 pts per text, 5-8 pts/min in call\n• **`/daily`:** Daily rewards with streak multiplier!\n• **🎰 Casino Games:** `/coinflip`, `/slots`, `/blackjack`\n• **Shop:** Spend points in `/shop` for crazy animated cards!', inline: false }
         )
-        .setFooter({ text: 'null Economy • /shop • /buy • /equip • /daily' })
+        .setFooter({ text: 'null Economy • /shop • /coinflip • /slots • /blackjack • /daily' })
         .setTimestamp();
 
     return embed;
+}
+
+// Builds the Badges & Achievements Embed
+function createBadgesEmbed(member, userData, rank) {
+    const badges = getUserBadges(userData, rank);
+    const unlockedIds = new Set(badges.map(b => b.id));
+
+    const embed = new EmbedBuilder()
+        .setAuthor({
+            name: `${member.displayName}'s Achievements & Badges`,
+            iconURL: member.user.displayAvatarURL({ dynamic: true })
+        })
+        .setColor(0x2BB6A6)
+        .setThumbnail(member.user.displayAvatarURL({ dynamic: true, size: 256 }))
+        .setDescription(`🏆 **Unlocked:** **${badges.length}** / **${BADGES_CONFIG.length}** Badges\nUnlocked badge icons appear directly on your \`/rank\` card profile!`);
+
+    const fields = BADGES_CONFIG.map(b => {
+        const isUnlocked = unlockedIds.has(b.id);
+        const icon = isUnlocked ? '✅' : '🔒';
+        return {
+            name: `${b.emoji} ${b.name} ${icon}`,
+            value: `*${b.desc}* — ${isUnlocked ? '**Unlocked!**' : '**Locked**'}`,
+            inline: true
+        };
+    });
+
+    embed.addFields(fields);
+    embed.setFooter({ text: 'Earn badges via chatting, voice calls, streaks, rank, and shop themes!' });
+    return embed;
+}
+
+// ==========================================
+// 🎰 CASINO & GAMBLING MINIGAMES
+// ==========================================
+
+// 1. Coinflip
+function handleCoinflip(guildId, userId, username, amountStr, choiceStr) {
+    const user = getOrCreateUser(guildId, userId, username);
+    const balance = user.points || 0;
+
+    let bet = 0;
+    const lowerAmt = (amountStr || '').toLowerCase().trim();
+    if (lowerAmt === 'all' || lowerAmt === 'max') {
+        bet = balance;
+    } else {
+        bet = parseInt(amountStr, 10);
+    }
+
+    if (isNaN(bet) || bet < 10) {
+        return { success: false, message: '❌ Minimum bet for Coinflip is **10 🪙 Points**!' };
+    }
+
+    if (bet > balance) {
+        return {
+            success: false,
+            message: `❌ You don't have enough points! Your balance: **${balance.toLocaleString()} 🪙 Points**.`
+        };
+    }
+
+    const choice = (choiceStr || '').toLowerCase().trim();
+    const isHeads = ['heads', 'head', 'h', 'עץ'].includes(choice);
+    const isTails = ['tails', 'tail', 't', 'פלי'].includes(choice);
+
+    if (!isHeads && !isTails) {
+        return { success: false, message: '❌ Invalid choice! Pick **heads** (`h` / `עץ`) or **tails** (`t` / `פלי`).\nUsage: `/coinflip <amount> <heads/tails>`' };
+    }
+
+    const won = Math.random() < 0.5;
+    const outcomeHeads = won ? isHeads : !isHeads;
+    const outcomeName = outcomeHeads ? 'Heads' : 'Tails';
+    const outcomeEmoji = outcomeHeads ? '🪙' : '🦅';
+
+    if (won) {
+        user.points += bet;
+        saveLevels();
+        return {
+            success: true,
+            won: true,
+            message: `🎉 **COINFLIP VICTORY!** The coin landed on **${outcomeEmoji} ${outcomeName}**!\nYou won **+${bet.toLocaleString()} 🪙 Points**!\n💰 Balance: **${user.points.toLocaleString()} 🪙 Points**`
+        };
+    } else {
+        user.points = Math.max(0, user.points - bet);
+        saveLevels();
+        return {
+            success: true,
+            won: false,
+            message: `💀 **COINFLIP LOSS!** The coin landed on **${outcomeEmoji} ${outcomeName}**.\nYou lost **${bet.toLocaleString()} 🪙 Points**.\n💰 Balance: **${user.points.toLocaleString()} 🪙 Points**`
+        };
+    }
+}
+
+// 2. Slots Machine
+const SLOT_SYMBOLS = [
+    { emoji: '🍒', name: 'Cherry', weight: 30, mult: 3 },
+    { emoji: '🍋', name: 'Lemon', weight: 25, mult: 4 },
+    { emoji: '🍇', name: 'Grape', weight: 20, mult: 5 },
+    { emoji: '💎', name: 'Diamond', weight: 12, mult: 8 },
+    { emoji: '⭐', name: 'Star', weight: 8, mult: 12 },
+    { emoji: '7️⃣', name: 'Lucky 7', weight: 5, mult: 25 }
+];
+
+function getRandomSlotSymbol() {
+    const totalWeight = SLOT_SYMBOLS.reduce((sum, s) => sum + s.weight, 0);
+    let rand = Math.random() * totalWeight;
+    for (const s of SLOT_SYMBOLS) {
+        if (rand < s.weight) return s;
+        rand -= s.weight;
+    }
+    return SLOT_SYMBOLS[0];
+}
+
+function handleSlots(guildId, userId, username, amountStr) {
+    const user = getOrCreateUser(guildId, userId, username);
+    const balance = user.points || 0;
+
+    let bet = 0;
+    const lowerAmt = (amountStr || '').toLowerCase().trim();
+    if (lowerAmt === 'all' || lowerAmt === 'max') {
+        bet = balance;
+    } else {
+        bet = parseInt(amountStr, 10);
+    }
+
+    if (isNaN(bet) || bet < 10) {
+        return { success: false, message: '❌ Minimum bet for Slots is **10 🪙 Points**!' };
+    }
+
+    if (bet > balance) {
+        return {
+            success: false,
+            message: `❌ You don't have enough points! Your balance: **${balance.toLocaleString()} 🪙 Points**.`
+        };
+    }
+
+    const s1 = getRandomSlotSymbol();
+    const s2 = getRandomSlotSymbol();
+    const s3 = getRandomSlotSymbol();
+
+    const reels = `[ ${s1.emoji} | ${s2.emoji} | ${s3.emoji} ]`;
+
+    if (s1.emoji === s2.emoji && s2.emoji === s3.emoji) {
+        // Triple Match!
+        const winAmount = bet * s1.mult;
+        user.points += winAmount - bet;
+        saveLevels();
+        return {
+            success: true,
+            embed: new EmbedBuilder()
+                .setTitle('🎰 CASINO SLOTS — JACKPOT! 🎰')
+                .setColor(0xFFD700)
+                .setDescription(`━━━━━━━━━━━━━\n# ${reels}\n━━━━━━━━━━━━━\n\n🔥 **JACKPOT!** 3x **${s1.emoji} ${s1.name}** (${s1.mult}x Multiplier)!\n🪙 **Won: +${winAmount.toLocaleString()} Points**\n💰 **Balance: ${user.points.toLocaleString()} Points**`)
+        };
+    } else if (s1.emoji === s2.emoji || s2.emoji === s3.emoji || s1.emoji === s3.emoji) {
+        // Double Match!
+        const matched = (s1.emoji === s2.emoji || s1.emoji === s3.emoji) ? s1 : s2;
+        const winAmount = Math.round(bet * 1.5);
+        user.points += winAmount - bet;
+        saveLevels();
+        return {
+            success: true,
+            embed: new EmbedBuilder()
+                .setTitle('🎰 CASINO SLOTS — NICE HIT! 🎰')
+                .setColor(0x2BB6A6)
+                .setDescription(`━━━━━━━━━━━━━\n# ${reels}\n━━━━━━━━━━━━━\n\n✨ **Pair!** 2x **${matched.emoji}** (1.5x Multiplier)!\n🪙 **Won: +${winAmount.toLocaleString()} Points**\n💰 **Balance: ${user.points.toLocaleString()} Points**`)
+        };
+    } else {
+        // No match
+        user.points = Math.max(0, user.points - bet);
+        saveLevels();
+        return {
+            success: true,
+            embed: new EmbedBuilder()
+                .setTitle('🎰 CASINO SLOTS 🎰')
+                .setColor(0xED4245)
+                .setDescription(`━━━━━━━━━━━━━\n# ${reels}\n━━━━━━━━━━━━━\n\n💀 **No match!** You lost **${bet.toLocaleString()} 🪙 Points**.\n💰 **Balance: ${user.points.toLocaleString()} Points**`)
+        };
+    }
+}
+
+// 3. Blackjack Engine
+const activeBlackjackGames = new Map();
+
+function createDeck() {
+    const suits = ['♠', '♥', '♦', '♣'];
+    const values = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
+    const deck = [];
+    for (const suit of suits) {
+        for (const val of values) {
+            deck.push({ suit, val });
+        }
+    }
+    for (let i = deck.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [deck[i], deck[j]] = [deck[j], deck[i]];
+    }
+    return deck;
+}
+
+function calculateHandValue(hand) {
+    let value = 0;
+    let aces = 0;
+    for (const card of hand) {
+        if (card.val === 'A') {
+            aces++;
+            value += 11;
+        } else if (['K', 'Q', 'J'].includes(card.val)) {
+            value += 10;
+        } else {
+            value += parseInt(card.val, 10);
+        }
+    }
+    while (value > 21 && aces > 0) {
+        value -= 10;
+        aces--;
+    }
+    return value;
+}
+
+function formatHand(hand, hideSecond = false) {
+    if (hideSecond) {
+        return `\`${hand[0].val}${hand[0].suit}\`  \`🂠 ?\``;
+    }
+    return hand.map(c => `\`${c.val}${c.suit}\``).join('  ');
+}
+
+function buildBlackjackEmbed(username, playerHand, dealerHand, hideDealer, statusText, color = 0x2BB6A6) {
+    const pScore = calculateHandValue(playerHand);
+    const dScore = hideDealer ? '?' : calculateHandValue(dealerHand);
+
+    return new EmbedBuilder()
+        .setTitle('🃏 CASINO BLACKJACK TABLE 🃏')
+        .setColor(color)
+        .addFields(
+            {
+                name: `🤖 Dealer's Hand (${dScore})`,
+                value: formatHand(dealerHand, hideDealer),
+                inline: false
+            },
+            {
+                name: `👤 ${username}'s Hand (${pScore})`,
+                value: formatHand(playerHand, false),
+                inline: false
+            }
+        )
+        .setDescription(`━━━━━━━━━━━━━━━━━━━━━\n${statusText}\n━━━━━━━━━━━━━━━━━━━━━`)
+        .setFooter({ text: 'Blackjack Table • Dealer stands on 17 • Blackjack pays 3:2' });
+}
+
+function buildBlackjackButtons(userId, canDouble = false) {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId(`bj_hit_${userId}`)
+            .setLabel('🃏 Hit')
+            .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+            .setCustomId(`bj_stand_${userId}`)
+            .setLabel('🛑 Stand')
+            .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+            .setCustomId(`bj_double_${userId}`)
+            .setLabel('💰 Double Down')
+            .setStyle(ButtonStyle.Success)
+            .setDisabled(!canDouble)
+    );
+}
+
+function startBlackjack(guildId, userId, username, amountStr) {
+    if (activeBlackjackGames.has(userId)) {
+        return { success: false, message: '⚠️ You already have an active Blackjack game in progress! Finish it first.' };
+    }
+
+    const user = getOrCreateUser(guildId, userId, username);
+    const balance = user.points || 0;
+
+    let bet = 0;
+    const lowerAmt = (amountStr || '').toLowerCase().trim();
+    if (lowerAmt === 'all' || lowerAmt === 'max') {
+        bet = balance;
+    } else {
+        bet = parseInt(amountStr, 10);
+    }
+
+    if (isNaN(bet) || bet < 20) {
+        return { success: false, message: '❌ Minimum bet for Blackjack is **20 🪙 Points**!' };
+    }
+
+    if (bet > balance) {
+        return {
+            success: false,
+            message: `❌ You don't have enough points! Your balance: **${balance.toLocaleString()} 🪙 Points**.`
+        };
+    }
+
+    const deck = createDeck();
+    const playerHand = [deck.pop(), deck.pop()];
+    const dealerHand = [deck.pop(), deck.pop()];
+
+    const playerScore = calculateHandValue(playerHand);
+    const dealerScore = calculateHandValue(dealerHand);
+
+    if (playerScore === 21) {
+        if (dealerScore === 21) {
+            return {
+                success: true,
+                finished: true,
+                embed: buildBlackjackEmbed(username, playerHand, dealerHand, false, '🤝 **PUSH!** Both you and Dealer have Blackjack. Bet refunded!', 0xFEE75C),
+                components: []
+            };
+        } else {
+            const winBonus = Math.round(bet * 1.5);
+            user.points += winBonus;
+            saveLevels();
+            return {
+                success: true,
+                finished: true,
+                embed: buildBlackjackEmbed(username, playerHand, dealerHand, false, `🏆 **BLACKJACK!** (3:2 payout) You won **+${winBonus.toLocaleString()} 🪙 Points**!\n💰 Balance: **${user.points.toLocaleString()} 🪙 Points**`, 0xFFD700),
+                components: []
+            };
+        }
+    }
+
+    const game = {
+        guildId,
+        userId,
+        username,
+        bet,
+        deck,
+        playerHand,
+        dealerHand,
+        startedAt: Date.now()
+    };
+
+    activeBlackjackGames.set(userId, game);
+
+    game.timeout = setTimeout(() => {
+        if (activeBlackjackGames.has(userId)) {
+            const g = activeBlackjackGames.get(userId);
+            const u = getOrCreateUser(g.guildId, g.userId, g.username);
+            u.points = Math.max(0, (u.points || 0) - g.bet);
+            saveLevels();
+            activeBlackjackGames.delete(userId);
+        }
+    }, 60000);
+
+    const embed = buildBlackjackEmbed(username, playerHand, dealerHand, true, 'Your turn! Choose **Hit**, **Stand**, or **Double Down** below:', 0x2BB6A6);
+    const canDouble = balance >= (bet * 2);
+    const row = buildBlackjackButtons(userId, canDouble);
+
+    return {
+        success: true,
+        finished: false,
+        embed,
+        components: [row]
+    };
+}
+
+async function handleBlackjackButtonInteraction(interaction) {
+    const parts = interaction.customId.split('_');
+    const action = parts[1];
+    const ownerId = parts[2];
+
+    if (interaction.user.id !== ownerId) {
+        return interaction.reply({ content: '❌ This is not your blackjack table!', ephemeral: true });
+    }
+
+    const game = activeBlackjackGames.get(interaction.user.id);
+    if (!game) {
+        return interaction.reply({ content: '⚠️ This blackjack game has already ended or expired.', ephemeral: true });
+    }
+
+    const user = getOrCreateUser(game.guildId, game.userId, game.username);
+
+    if (action === 'hit') {
+        game.playerHand.push(game.deck.pop());
+        const pScore = calculateHandValue(game.playerHand);
+
+        if (pScore > 21) {
+            if (game.timeout) clearTimeout(game.timeout);
+            activeBlackjackGames.delete(game.userId);
+            user.points = Math.max(0, (user.points || 0) - game.bet);
+            saveLevels();
+
+            const bustEmbed = buildBlackjackEmbed(game.username, game.playerHand, game.dealerHand, false, `💥 **BUST!** You went over 21 (${pScore}). You lost **${game.bet.toLocaleString()} 🪙 Points**.\n💰 Remaining Balance: **${user.points.toLocaleString()} 🪙 Points**`, 0xED4245);
+            return interaction.update({ embeds: [bustEmbed], components: [] });
+        } else if (pScore === 21) {
+            return resolveBlackjackDealer(interaction, game, user);
+        } else {
+            const embed = buildBlackjackEmbed(game.username, game.playerHand, game.dealerHand, true, 'You drew a card. Choose your next move:', 0x2BB6A6);
+            const row = buildBlackjackButtons(game.userId, false);
+            return interaction.update({ embeds: [embed], components: [row] });
+        }
+    } else if (action === 'stand') {
+        return resolveBlackjackDealer(interaction, game, user);
+    } else if (action === 'double') {
+        const canDouble = (user.points || 0) >= (game.bet * 2);
+        if (!canDouble) {
+            return interaction.reply({ content: '❌ You do not have enough points to Double Down!', ephemeral: true });
+        }
+
+        game.bet *= 2;
+        game.playerHand.push(game.deck.pop());
+        const pScore = calculateHandValue(game.playerHand);
+
+        if (pScore > 21) {
+            if (game.timeout) clearTimeout(game.timeout);
+            activeBlackjackGames.delete(game.userId);
+            user.points = Math.max(0, (user.points || 0) - game.bet);
+            saveLevels();
+
+            const bustEmbed = buildBlackjackEmbed(game.username, game.playerHand, game.dealerHand, false, `💥 **BUST ON DOUBLE DOWN!** You went over 21 (${pScore}). You lost **${game.bet.toLocaleString()} 🪙 Points**.\n💰 Remaining Balance: **${user.points.toLocaleString()} 🪙 Points**`, 0xED4245);
+            return interaction.update({ embeds: [bustEmbed], components: [] });
+        } else {
+            return resolveBlackjackDealer(interaction, game, user);
+        }
+    }
+}
+
+async function resolveBlackjackDealer(interaction, game, user) {
+    if (game.timeout) clearTimeout(game.timeout);
+    activeBlackjackGames.delete(game.userId);
+
+    while (calculateHandValue(game.dealerHand) < 17) {
+        game.dealerHand.push(game.deck.pop());
+    }
+
+    const pScore = calculateHandValue(game.playerHand);
+    const dScore = calculateHandValue(game.dealerHand);
+
+    let statusText = '';
+    let color = 0x2BB6A6;
+
+    if (dScore > 21) {
+        user.points = (user.points || 0) + game.bet;
+        saveLevels();
+        statusText = `🎉 **DEALER BUST!** Dealer hit ${dScore} and busted!\nYou won **+${game.bet.toLocaleString()} 🪙 Points**!\n💰 Balance: **${user.points.toLocaleString()} 🪙 Points**`;
+        color = 0x57F287;
+    } else if (pScore > dScore) {
+        user.points = (user.points || 0) + game.bet;
+        saveLevels();
+        statusText = `🎉 **YOU WIN!** Your ${pScore} beat Dealer's ${dScore}!\nYou won **+${game.bet.toLocaleString()} 🪙 Points**!\n💰 Balance: **${user.points.toLocaleString()} 🪙 Points**`;
+        color = 0x57F287;
+    } else if (dScore > pScore) {
+        user.points = Math.max(0, (user.points || 0) - game.bet);
+        saveLevels();
+        statusText = `💀 **DEALER WINS!** Dealer's ${dScore} beat your ${pScore}!\nYou lost **${game.bet.toLocaleString()} 🪙 Points**.\n💰 Balance: **${user.points.toLocaleString()} 🪙 Points**`;
+        color = 0xED4245;
+    } else {
+        statusText = `🤝 **PUSH!** Both tied at ${pScore}!\nBet refunded.\n💰 Balance: **${user.points.toLocaleString()} 🪙 Points**`;
+        color = 0xFEE75C;
+    }
+
+    const finalEmbed = buildBlackjackEmbed(game.username, game.playerHand, game.dealerHand, false, statusText, color);
+    if (interaction.update) {
+        return interaction.update({ embeds: [finalEmbed], components: [] });
+    } else {
+        return interaction.reply({ embeds: [finalEmbed], components: [] });
+    }
+}
+
+// ==========================================
+// 📜 LYRICS ENGINE (Powered by LRCLIB API)
+// ==========================================
+function cleanTrackTitle(title) {
+    return title
+        .replace(/\[.*?\]|\(.*?\)/g, '')
+        .replace(/official\s*(music)?\s*(video|audio|visualizer|lyric\s*video)?/gi, '')
+        .replace(/ft\.|feat\./gi, '')
+        .replace(/\|\s*.*$/g, '')
+        .replace(/[-_]/g, ' ')
+        .trim();
+}
+
+async function fetchLyrics(trackName, artistName = '') {
+    const queries = [];
+    if (artistName && trackName) queries.push(`${artistName} ${trackName}`);
+    queries.push(trackName);
+    const cleaned = cleanTrackTitle(trackName);
+    if (cleaned && cleaned !== trackName) queries.push(cleaned);
+
+    for (const q of queries) {
+        try {
+            const url = `https://lrclib.net/api/search?q=${encodeURIComponent(q)}`;
+            const res = await fetch(url, {
+                headers: { 'User-Agent': 'null-discord-bot/1.0' },
+                signal: AbortSignal.timeout(5000)
+            });
+            const json = await res.json();
+            if (Array.isArray(json) && json.length > 0) {
+                const match = json.find(t => t.plainLyrics) || json[0];
+                if (match && match.plainLyrics) return match;
+            }
+        } catch {}
+    }
+    return null;
+}
+
+async function handleLyricsCommand(context, queryInput = null, isSlash = true) {
+    const guild = context.guild;
+    if (!guild) {
+        const msg = '❌ This command can only be used inside a server!';
+        return isSlash ? context.reply({ content: msg, ephemeral: true }) : context.reply(msg);
+    }
+
+    let songQuery = queryInput ? queryInput.trim() : null;
+    let fallbackThumbnail = null;
+
+    if (!songQuery) {
+        const player = client.riffy.players.get(guild.id);
+        if (player && player.current && player.current.info) {
+            songQuery = player.current.info.title;
+            fallbackThumbnail = player.current.info.thumbnail || null;
+        }
+    }
+
+    if (!songQuery) {
+        const msg = '❌ No music is currently playing! Please provide a song name: `/lyrics <song>` or `!lyrics <song>`.';
+        return isSlash ? context.reply({ content: msg, ephemeral: true }) : context.reply(msg);
+    }
+
+    if (isSlash) await context.deferReply();
+    else if (context.channel.sendTyping) await context.channel.sendTyping().catch(() => {});
+
+    try {
+        const lyricsData = await fetchLyrics(songQuery);
+        if (!lyricsData || !lyricsData.plainLyrics) {
+            const notFoundMsg = `❌ Could not find lyrics for: **${songQuery}**.\n💡 *Try specifying artist and title, e.g.* \`/lyrics Queen Bohemian Rhapsody\``;
+            return isSlash ? context.editReply({ content: notFoundMsg }) : context.reply(notFoundMsg);
+        }
+
+        const title = lyricsData.trackName || songQuery;
+        const artist = lyricsData.artistName || 'Unknown Artist';
+        let lyrics = lyricsData.plainLyrics.trim();
+
+        if (lyrics.length > 3900) {
+            lyrics = lyrics.slice(0, 3900) + '\n\n*(...lyrics truncated)*';
+        }
+
+        const embed = new EmbedBuilder()
+            .setTitle(`📜 Lyrics: ${title}`)
+            .setAuthor({ name: artist })
+            .setDescription(lyrics)
+            .setColor(0x2BB6A6)
+            .setFooter({ text: 'Lyrics powered by LRCLIB' })
+            .setTimestamp();
+
+        if (fallbackThumbnail) embed.setThumbnail(fallbackThumbnail);
+
+        return isSlash ? context.editReply({ embeds: [embed] }) : context.reply({ embeds: [embed] });
+    } catch (e) {
+        const errMsg = `⚠️ Failed to fetch lyrics: ${e.message}`;
+        return isSlash ? context.editReply({ content: errMsg }) : context.reply(errMsg);
+    }
+}
+
+// ==========================================
+// 📖 HELP GUIDE EMBED
+// ==========================================
+function createHelpEmbed() {
+    return new EmbedBuilder()
+        .setTitle('📖 null Bot — Commands Guide')
+        .setDescription('Ultra-lightweight, 24/7 high-fidelity music bot with interactive buttons, arcade leveling, casino minigames, and an AI brain.')
+        .setColor(0x5865F2)
+        .addFields(
+            { name: '🏆 Leveling & Rank (Arcade System)', value: '`/rank [user]` (or `!rank`) — Check rank card (Level, XP, texts sent, call time, points)\n`/setbio <text>` (or `!bio <text>`) — Set a custom tagline/quote on your rank card!\n`/badges [user]` (or `!badges`) — View unlocked achievements & badges!\n`/leaderboard [type]` (or `!top`) — Server leaderboard (Top 10 by XP or Points)' },
+            { name: '🪙 Economy & Card Themes Shop', value: '`/shop` (or `!shop`) — Browse shop & preview themes live with interactive dropdown!\n`/preview <theme>` (or `!preview <theme>`) — Generate live preview (Animated GIFs & static)\n`/buy <theme>` (or `!buy <theme>`) — Purchase a theme (Budget from 120 pts to Animated GIF at 2,500 pts)\n`/equip <theme>` (or `!equip <theme>`) — Equip an owned card theme\n`/daily` (or `!daily`) — Claim daily reward with streak multiplier & milestone rewards!\n`/points [user]` (or `!points`) — View wallet, points, streak, and owned themes' },
+            { name: '🎰 Casino & Gambling Minigames', value: '`/coinflip <amount> <heads/tails>` (or `!cf`) — 50/50 double-or-nothing coinflip!\n`/slots <amount>` (or `!slots`) — Spin slot reels for up to 25x Lucky 7 jackpot!\n`/blackjack <amount>` (or `!bj`) — Interactive blackjack table against dealer with buttons (Hit, Stand, Double)!' },
+            { name: '🎮 Arcade Minigames', value: '`/hangman [category]` (or `!hangman`) — Interactive Hangman game with real words & ASCII art!\n• Type single letters in chat (e.g. `e`, `a`) or full words to guess!\n• Earn points & XP for finding letters and winning!\n`/hangman-stop` (or `!forfeit`) — Forfeit active game' },
+            { name: '🧠 AI Chat & Web Search', value: '• **Mention `@null`** in any channel to chat!\n• **Reply to null\'s messages** to continue the conversation!\n• `/ask <question> [image]` — Ask AI (Groq for text, Gemini Vision for images/GIFs)\n• Remembers **50 messages** of history and knows server members & roles!' },
+            { name: '🎶 Music & Lyrics', value: '`/play <song>` — Play songs or playlists (YouTube, Spotify, SoundCloud)\n`/lyrics [song]` (or `!lyrics`) — Live lyrics lookup for currently playing song or search\n`/pause` — Pause music\n`/resume` — Resume music\n`/skip` — Skip to next song\n`/stop` — Stop playback & disconnect' },
+            { name: '📜 Queue & Audio', value: '`/nowplaying` — Live song display with progress bar & buttons\n`/queue` — Show upcoming songs\n`/shuffle` — Shuffle the queue\n`/volume <1-100>` — Change playback volume' },
+            { name: '⚙️ Utilities', value: '`/null` — Bot status, memory diagnostics & AI brain info\n`/ping` — Check latency\n`/help` (or `!help`) — Display this guide' }
+        )
+        .setFooter({ text: 'null Music • Interactive Controls Available on Playback' });
 }
 
 // ==========================================
@@ -2594,6 +3230,14 @@ const slashCommands = [
                 .setRequired(true)
         ),
     new SlashCommandBuilder()
+        .setName('lyrics')
+        .setDescription('Display lyrics for the current song or search for lyrics of any track')
+        .addStringOption(option =>
+            option.setName('song')
+                .setDescription('Song title / artist (leave blank for currently playing song)')
+                .setRequired(false)
+        ),
+    new SlashCommandBuilder()
         .setName('ask')
         .setDescription('Ask null anything (Text via Groq, Images/GIFs via Gemini Vision)')
         .addStringOption(option =>
@@ -2622,6 +3266,47 @@ const slashCommands = [
                 .setDescription('Your custom bio text (leave empty to clear)')
                 .setRequired(false)
                 .setMaxLength(45)
+        ),
+    new SlashCommandBuilder()
+        .setName('badges')
+        .setDescription('View unlocked achievements and badges for yourself or another user')
+        .addUserOption(option =>
+            option.setName('user')
+                .setDescription('Member to view badges for (defaults to yourself)')
+                .setRequired(false)
+        ),
+    new SlashCommandBuilder()
+        .setName('coinflip')
+        .setDescription('Bet points on a 50/50 coinflip (Heads or Tails)!')
+        .addStringOption(option =>
+            option.setName('amount')
+                .setDescription('Amount of points to bet (e.g. 50, 100, all)')
+                .setRequired(true)
+        )
+        .addStringOption(option =>
+            option.setName('choice')
+                .setDescription('Pick heads or tails')
+                .setRequired(true)
+                .addChoices(
+                    { name: '🪙 Heads (עץ)', value: 'heads' },
+                    { name: '🦅 Tails (פלי)', value: 'tails' }
+                )
+        ),
+    new SlashCommandBuilder()
+        .setName('slots')
+        .setDescription('Spin the virtual casino slot machine for huge multipliers up to 25x jackpot!')
+        .addStringOption(option =>
+            option.setName('amount')
+                .setDescription('Amount of points to bet (e.g. 50, 100, all)')
+                .setRequired(true)
+        ),
+    new SlashCommandBuilder()
+        .setName('blackjack')
+        .setDescription('Play casino Blackjack against the dealer with interactive buttons!')
+        .addStringOption(option =>
+            option.setName('amount')
+                .setDescription('Amount of points to bet (e.g. 50, 100, all)')
+                .setRequired(true)
         ),
     new SlashCommandBuilder()
         .setName('leaderboard')
@@ -2667,7 +3352,7 @@ const slashCommands = [
         ),
     new SlashCommandBuilder()
         .setName('daily')
-        .setDescription('Claim your daily reward of 200 points! (Once every 24 hours)'),
+        .setDescription('Claim your daily reward with streak multiplier! (Once every 24 hours)'),
     new SlashCommandBuilder()
         .setName('points')
         .setDescription('Check your points balance, inventory, and equipped card theme')
@@ -2889,6 +3574,70 @@ client.on('messageCreate', async (message) => {
             return message.reply(`✨ **Custom Bio Updated!** Your rank card will now display:\n> *“${cleaned}”*\nType \`!rank\` to see your card!`).catch(() => {});
         }
 
+        // Badges command: !badges / !achievements
+        if (lower === '!badges' || lower === '!achievements' || lower.startsWith('!badges ') || lower.startsWith('!achievements ')) {
+            const targetUser = message.mentions.users.first() || message.author;
+            const targetMember = await message.guild.members.fetch(targetUser.id).catch(() => null) || message.member;
+            const userData = getOrCreateUser(message.guild.id, targetUser.id, targetMember.displayName || targetUser.username);
+            const { rank } = getUserRank(message.guild.id, targetMember.id);
+            const embed = createBadgesEmbed(targetMember, userData, rank);
+            return message.reply({ embeds: [embed] }).catch(() => {});
+        }
+
+        // Coinflip casino game: !coinflip <amount> <heads/tails> / !cf <amount> <choice>
+        if (lower === '!coinflip' || lower === '!cf' || lower.startsWith('!coinflip ') || lower.startsWith('!cf ')) {
+            const parts = message.content.trim().split(/\s+/);
+            if (parts.length < 3) {
+                return message.reply('💡 **Usage:** `!coinflip <amount> <heads/tails>` (or `!cf 50 h` / `!cf 100 t`). Pick heads or tails!').catch(() => {});
+            }
+            const amount = parts[1];
+            const choice = parts[2];
+            const res = handleCoinflip(message.guild.id, message.author.id, message.member?.displayName || message.author.username, amount, choice);
+            return message.reply(res.message).catch(() => {});
+        }
+
+        // Slots casino game: !slots <amount>
+        if (lower === '!slots' || lower.startsWith('!slots ')) {
+            const parts = message.content.trim().split(/\s+/);
+            if (parts.length < 2) {
+                return message.reply('💡 **Usage:** `!slots <amount>` (e.g. `!slots 50`, `!slots 100`, `!slots all`).').catch(() => {});
+            }
+            const amount = parts[1];
+            const res = handleSlots(message.guild.id, message.author.id, message.member?.displayName || message.author.username, amount);
+            if (res.embed) {
+                return message.reply({ embeds: [res.embed] }).catch(() => {});
+            } else {
+                return message.reply(res.message).catch(() => {});
+            }
+        }
+
+        // Blackjack casino game: !blackjack <amount> / !bj <amount>
+        if (lower === '!blackjack' || lower === '!bj' || lower.startsWith('!blackjack ') || lower.startsWith('!bj ')) {
+            const parts = message.content.trim().split(/\s+/);
+            if (parts.length < 2) {
+                return message.reply('💡 **Usage:** `!blackjack <amount>` (or `!bj 50`). Minimum bet: 20 🪙 Points.').catch(() => {});
+            }
+            const amount = parts[1];
+            const res = startBlackjack(message.guild.id, message.author.id, message.member?.displayName || message.author.username, amount);
+            if (res.embed) {
+                return message.reply({ embeds: [res.embed], components: res.components || [] }).catch(() => {});
+            } else {
+                return message.reply(res.message).catch(() => {});
+            }
+        }
+
+        // Lyrics command: !lyrics [song]
+        if (lower === '!lyrics' || lower.startsWith('!lyrics ')) {
+            const query = lower === '!lyrics' ? null : message.content.slice(8).trim();
+            return handleLyricsCommand(message, query, false);
+        }
+
+        // Help command: !help / !commands
+        if (lower === '!help' || lower === '!commands') {
+            const embed = createHelpEmbed();
+            return message.reply({ embeds: [embed] }).catch(() => {});
+        }
+
         // Hangman command: !hangman [category] / !hm [category]
         if (lower === '!hangman' || lower === '!hm' || lower.startsWith('!hangman ') || lower.startsWith('!hm ')) {
             const parts = lower.split(/\s+/);
@@ -3088,6 +3837,11 @@ client.on('interactionCreate', async (interaction) => {
             const userData = getOrCreateUser(interaction.guild.id, interaction.user.id, interaction.member?.displayName || interaction.user.username);
             const updatedPayload = await buildThemePreviewPayload(interaction.member, userData, themeId);
             return interaction.reply({ content: res.message, ...updatedPayload, ephemeral: true });
+        }
+
+        // Blackjack Table Interactive Buttons
+        if (interaction.customId.startsWith('bj_')) {
+            return handleBlackjackButtonInteraction(interaction);
         }
 
         const player = client.riffy.players.get(interaction.guildId);
@@ -3321,6 +4075,63 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ embeds: [embed] });
     }
 
+    // --- /badges ---
+    if (commandName === 'badges') {
+        if (!interaction.guild) {
+            return interaction.reply({ content: '❌ Badges are server-specific! Please run this command inside a server.', ephemeral: true });
+        }
+
+        const targetUser = interaction.options.getUser('user') || interaction.user;
+        const targetMember = await interaction.guild.members.fetch(targetUser.id).catch(() => null) || interaction.member;
+        const userData = getOrCreateUser(interaction.guild.id, targetUser.id, targetMember.displayName || targetUser.username);
+        const { rank } = getUserRank(interaction.guild.id, targetMember.id);
+
+        const embed = createBadgesEmbed(targetMember, userData, rank);
+        return interaction.reply({ embeds: [embed] });
+    }
+
+    // --- /coinflip ---
+    if (commandName === 'coinflip') {
+        if (!interaction.guild) {
+            return interaction.reply({ content: '❌ Casino is server-specific! Please run this command inside a server.', ephemeral: true });
+        }
+
+        const amount = interaction.options.getString('amount');
+        const choice = interaction.options.getString('choice');
+        const res = handleCoinflip(interaction.guild.id, interaction.user.id, interaction.member?.displayName || interaction.user.username, amount, choice);
+        return interaction.reply({ content: res.message });
+    }
+
+    // --- /slots ---
+    if (commandName === 'slots') {
+        if (!interaction.guild) {
+            return interaction.reply({ content: '❌ Casino is server-specific! Please run this command inside a server.', ephemeral: true });
+        }
+
+        const amount = interaction.options.getString('amount');
+        const res = handleSlots(interaction.guild.id, interaction.user.id, interaction.member?.displayName || interaction.user.username, amount);
+        if (res.embed) {
+            return interaction.reply({ embeds: [res.embed] });
+        } else {
+            return interaction.reply({ content: res.message });
+        }
+    }
+
+    // --- /blackjack ---
+    if (commandName === 'blackjack') {
+        if (!interaction.guild) {
+            return interaction.reply({ content: '❌ Casino is server-specific! Please run this command inside a server.', ephemeral: true });
+        }
+
+        const amount = interaction.options.getString('amount');
+        const res = startBlackjack(interaction.guild.id, interaction.user.id, interaction.member?.displayName || interaction.user.username, amount);
+        if (res.embed) {
+            return interaction.reply({ embeds: [res.embed], components: res.components || [] });
+        } else {
+            return interaction.reply({ content: res.message });
+        }
+    }
+
     // --- /hangman ---
     if (commandName === 'hangman') {
         if (!interaction.guild) {
@@ -3441,6 +4252,12 @@ client.on('interactionCreate', async (interaction) => {
             console.error('Play error:', error.message);
             return interaction.editReply({ content: `⚠️ Could not play track: ${error.message}` });
         }
+    }
+
+    // --- /lyrics ---
+    if (commandName === 'lyrics') {
+        const song = interaction.options.getString('song');
+        return handleLyricsCommand(interaction, song, true);
     }
 
     // --- /pause ---
@@ -3594,21 +4411,7 @@ client.on('interactionCreate', async (interaction) => {
 
     // --- /help ---
     if (commandName === 'help') {
-        const embed = new EmbedBuilder()
-            .setTitle('📖 null Bot — Commands Guide')
-            .setDescription('Ultra-lightweight, 24/7 high-fidelity music bot with interactive buttons and an AI brain.')
-            .setColor(0x5865F2)
-            .addFields(
-                { name: '🏆 Leveling & Rank (Arcade System)', value: '`/rank [user]` (or `!rank`) — Check rank card (Level, XP, texts sent, call time, points)\n`/setbio <text>` (or `!bio <text>`) — Set a custom tagline/quote on your rank card!\n`/leaderboard [type]` (or `!top`) — Server leaderboard (Top 10 by XP or Points)' },
-                { name: '🪙 Economy & Card Themes Shop', value: '`/shop` (or `!shop`) — Browse shop & preview themes live with interactive dropdown!\n`/preview <theme>` (or `!preview <theme>`) — Generate live preview (Animated GIFs & static)\n`/buy <theme>` (or `!buy <theme>`) — Purchase a theme (Budget from 120 pts to Animated GIF at 2,500 pts)\n`/equip <theme>` (or `!equip <theme>`) — Equip an owned card theme\n`/daily` (or `!daily`) — Claim daily reward (+200 points every 24h)\n`/points [user]` (or `!points`) — View wallet, points, and owned themes' },
-                { name: '🎮 Arcade Minigames', value: '`/hangman [category]` (or `!hangman`) — Interactive Hangman game with real words & ASCII art!\n• Type single letters in chat (e.g. `e`, `a`) or full words to guess!\n• Earn points & XP for finding letters and winning!\n`/hangman-stop` (or `!forfeit`) — Forfeit active game' },
-                { name: '🧠 AI Chat & Web Search', value: '• **Mention `@null`** in any channel to chat!\n• **Reply to null\'s messages** to continue the conversation!\n• `/ask <question> [image]` — Ask AI (Groq for text, Gemini Vision for images/GIFs)\n• Remembers **50 messages** of history and knows server members & roles!' },
-                { name: '🎶 Music Playback', value: '`/play <song>` — Play songs or playlists (YouTube, Spotify, SoundCloud)\n`/pause` — Pause music\n`/resume` — Resume music\n`/skip` — Skip to next song\n`/stop` — Stop playback & disconnect' },
-                { name: '📜 Queue & Audio', value: '`/nowplaying` — Live song display with progress bar & buttons\n`/queue` — Show upcoming songs\n`/shuffle` — Shuffle the queue\n`/volume <1-100>` — Change playback volume' },
-                { name: '⚙️ Utilities', value: '`/null` — Bot status, memory diagnostics & AI brain info\n`/ping` — Check latency\n`/help` — Display this guide' }
-            )
-            .setFooter({ text: 'null Music • Interactive Controls Available on Playback' });
-
+        const embed = createHelpEmbed();
         return interaction.reply({ embeds: [embed] });
     }
 });
