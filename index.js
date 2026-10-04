@@ -1771,6 +1771,330 @@ function createPointsEmbed(member, userData) {
     return embed;
 }
 
+// ==========================================
+// 🎮 HANGMAN MINIGAME ENGINE (100% Real Words & Accurate Rules)
+// ==========================================
+
+const HANGMAN_STAGES = [
+`  +---+
+  |   |
+      |
+      |
+      |
+      |
+=========`,
+`  +---+
+  |   |
+  O   |
+      |
+      |
+      |
+=========`,
+`  +---+
+  |   |
+  O   |
+  |   |
+      |
+      |
+=========`,
+`  +---+
+  |   |
+  O   |
+ /|   |
+      |
+      |
+=========`,
+`  +---+
+  |   |
+  O   |
+ /|\\  |
+      |
+      |
+=========`,
+`  +---+
+  |   |
+  O   |
+ /|\\  |
+ /    |
+      |
+=========`,
+`  +---+
+  |   |
+  O   |
+ /|\\  |
+ / \\  |
+      |
+=========`
+];
+
+const HANGMAN_WORDS = {
+    gaming: [
+        { word: 'MINECRAFT', hint: 'Sandbox block building game' },
+        { word: 'FORTNITE', hint: 'Battle Royale with building mechanics' },
+        { word: 'VALORANT', hint: 'Tactical hero first-person shooter' },
+        { word: 'POKEMON', hint: 'Gotta catch them all!' },
+        { word: 'ROBLOX', hint: 'User-generated online gaming platform' },
+        { word: 'ZELDA', hint: 'Hero with a sword and princess of Hyrule' },
+        { word: 'OVERWATCH', hint: 'Team-based hero shooter by Blizzard' },
+        { word: 'WITCHER', hint: 'Geralt of Rivia monster hunter' },
+        { word: 'CYBERPUNK', hint: 'Night City open-world RPG' },
+        { word: 'SKYRIM', hint: 'Dragons, shouts, and arrows in the knee' },
+        { word: 'TERRARIA', hint: '2D sandbox adventure game' },
+        { word: 'DISCORD', hint: 'Where gamers chat and stream' },
+        { word: 'PLAYSTATION', hint: 'Sony video game console' },
+        { word: 'NINTENDO', hint: 'Japanese gaming titan behind Mario' },
+        { word: 'WARZONE', hint: 'Call of Duty free battle royale' },
+        { word: 'ASSASSIN', hint: 'Creed series about stealth killers' }
+    ],
+    animals: [
+        { word: 'ELEPHANT', hint: 'Largest land mammal with a trunk' },
+        { word: 'DOLPHIN', hint: 'Smart aquatic mammal known for jumping' },
+        { word: 'PENGUIN', hint: 'Flightless bird in Antarctica' },
+        { word: 'KANGAROO', hint: 'Australian marsupial that hops' },
+        { word: 'GIRAFFE', hint: 'Tallest animal with a long neck' },
+        { word: 'OCTOPUS', hint: 'Sea creature with eight tentacles' },
+        { word: 'CHEETAH', hint: 'Fastest land animal on Earth' },
+        { word: 'FLAMINGO', hint: 'Pink bird that stands on one leg' },
+        { word: 'CHAMELEON', hint: 'Lizard that changes skin color' },
+        { word: 'PLATYPUS', hint: 'Duck-billed egg-laying mammal' },
+        { word: 'HEDGEHOG', hint: 'Spiky small mammal that rolls into a ball' },
+        { word: 'CROCODILE', hint: 'Ancient predatory reptile with strong jaws' },
+        { word: 'BUTTERFLY', hint: 'Insect with colorful wings' }
+    ],
+    tech: [
+        { word: 'ALGORITHM', hint: 'Step-by-step problem-solving instructions' },
+        { word: 'JAVASCRIPT', hint: 'Programming language of the web' },
+        { word: 'PYTHON', hint: 'Popular readable programming language' },
+        { word: 'DATABASE', hint: 'Organized collection of stored data' },
+        { word: 'COMPUTER', hint: 'Electronic calculating machine' },
+        { word: 'ARTIFICIAL', hint: 'The "A" in AI' },
+        { word: 'INTELLIGENCE', hint: 'The "I" in AI' },
+        { word: 'INTERNET', hint: 'Global network of computers' },
+        { word: 'FIREWALL', hint: 'Network security defense barrier' },
+        { word: 'QUANTUM', hint: 'Physics theory powering futuristic computing' },
+        { word: 'PROCESSOR', hint: 'The CPU chip brain of a machine' },
+        { word: 'ENCRYPTION', hint: 'Scrambling data for digital privacy' }
+    ],
+    movies: [
+        { word: 'INCEPTION', hint: 'Dream within a dream heist movie' },
+        { word: 'TITANIC', hint: 'Ship that hit an iceberg in 1912' },
+        { word: 'SPIDERMAN', hint: 'With great power comes great responsibility' },
+        { word: 'GLADIATOR', hint: 'Are you not entertained in Rome?' },
+        { word: 'BATMAN', hint: 'The Dark Knight defender of Gotham' },
+        { word: 'INTERSTELLAR', hint: 'Space travel through a black hole' },
+        { word: 'MATRIX', hint: 'Red pill or blue pill?' },
+        { word: 'AVATAR', hint: 'Blue Na\'vi people on planet Pandora' },
+        { word: 'HARRYPOTTER', hint: 'The boy wizard who lived' },
+        { word: 'STARWARS', hint: 'Jedi and the Force in a galaxy far away' }
+    ],
+    general: [
+        { word: 'CHOCOLATE', hint: 'Sweet cocoa treat loved worldwide' },
+        { word: 'SUNSHINE', hint: 'Warm golden rays from the sky' },
+        { word: 'MOUNTAIN', hint: 'Giant natural peak rising into clouds' },
+        { word: 'ADVENTURE', hint: 'Exciting and daring journey' },
+        { word: 'UNIVERSE', hint: 'Everything that exists in space and time' },
+        { word: 'MYSTERY', hint: 'Something unexplained or secret' },
+        { word: 'VACATION', hint: 'Time off from work or school to relax' },
+        { word: 'TELESCOPE', hint: 'Instrument used to observe distant stars' },
+        { word: 'PARADISE', hint: 'An ideal place of perfect happiness' },
+        { word: 'CELEBRATION', hint: 'Festive gathering for a special event' },
+        { word: 'HOSPITAL', hint: 'Place where sick people receive care' },
+        { word: 'LIBRARY', hint: 'Building filled with shelves of books' }
+    ]
+};
+
+// Map of active games: channelId -> GameState
+const activeHangmanGames = new Map();
+
+function startHangmanGame(channelId, categoryChoice = 'all', starterUser = null) {
+    if (activeHangmanGames.has(channelId)) {
+        const old = activeHangmanGames.get(channelId);
+        if (old.timeout) clearTimeout(old.timeout);
+        activeHangmanGames.delete(channelId);
+    }
+
+    let category = (categoryChoice || 'all').toLowerCase();
+    const validCategories = Object.keys(HANGMAN_WORDS);
+    if (!validCategories.includes(category)) {
+        category = validCategories[Math.floor(Math.random() * validCategories.length)];
+    }
+
+    let pool = [];
+    if (categoryChoice === 'all' || !validCategories.includes(categoryChoice.toLowerCase())) {
+        for (const cat of validCategories) pool.push(...HANGMAN_WORDS[cat].map(w => ({ ...w, category: cat })));
+    } else {
+        pool = HANGMAN_WORDS[category].map(w => ({ ...w, category }));
+    }
+
+    const item = pool[Math.floor(Math.random() * pool.length)];
+    const word = item.word.toUpperCase();
+
+    const game = {
+        channelId,
+        word,
+        hint: item.hint,
+        category: item.category.toUpperCase(),
+        guessedLetters: new Set(),
+        wrongGuesses: new Set(),
+        starterUser: starterUser?.displayName || starterUser?.username || 'Player',
+        starterId: starterUser?.id,
+        lives: 6,
+        lastActivity: Date.now(),
+        timeout: null
+    };
+
+    activeHangmanGames.set(channelId, game);
+
+    // Auto-terminate after 3 minutes of inactivity
+    game.timeout = setTimeout(() => {
+        if (activeHangmanGames.get(channelId) === game) {
+            activeHangmanGames.delete(channelId);
+        }
+    }, 180000);
+
+    return game;
+}
+
+function renderHangmanDisplay(game) {
+    const stageIdx = Math.min(game.wrongGuesses.size, HANGMAN_STAGES.length - 1);
+    const gallows = HANGMAN_STAGES[stageIdx];
+
+    const displayWord = game.word.split('').map(letter => {
+        if (game.guessedLetters.has(letter)) {
+            return letter;
+        }
+        return '\\_';
+    }).join(' ');
+
+    const wrongList = game.wrongGuesses.size > 0 
+        ? Array.from(game.wrongGuesses).join(', ') 
+        : '*None*';
+
+    const hearts = '❤️'.repeat(game.lives) + '🖤'.repeat(6 - game.lives);
+
+    const embed = new EmbedBuilder()
+        .setTitle(`🎮 Hangman Game — [${game.category}]`)
+        .setColor(game.lives <= 2 ? 0xED4245 : 0x2BB6A6)
+        .setDescription(`\`\`\`\n${gallows}\n\`\`\`\n` +
+            `🔤 **Word:** **${displayWord}** (${game.word.length} letters)\n` +
+            `💡 **Hint:** *${game.hint}*\n` +
+            `❌ **Wrong Guesses:** \`${wrongList}\`\n` +
+            `❤️ **Lives:** ${hearts} (${game.lives}/6)\n\n` +
+            `*💬 Type a letter (e.g. \`E\`) or the full word in chat to guess!*\n` +
+            `*Type \`!forfeit\` to give up.*`
+        )
+        .setFooter({ text: `Started by ${game.starterUser} • Anyone in this channel can guess!` });
+
+    return embed;
+}
+
+function processHangmanGuess(game, guessText, guessingUser, guildId) {
+    const raw = (guessText || '').toUpperCase().trim();
+    if (!raw) return null;
+
+    if (game.timeout) clearTimeout(game.timeout);
+    game.timeout = setTimeout(() => {
+        if (activeHangmanGames.get(game.channelId) === game) {
+            activeHangmanGames.delete(game.channelId);
+        }
+    }, 180000);
+
+    const userName = guessingUser.displayName || guessingUser.username;
+
+    // Full Word Guess
+    if (raw.length > 1) {
+        if (raw === game.word) {
+            for (const char of game.word) game.guessedLetters.add(char);
+            activeHangmanGames.delete(game.channelId);
+
+            const userRec = getOrCreateUser(guildId, guessingUser.id, userName);
+            userRec.points = (userRec.points || 0) + 100;
+            userRec.xp = (userRec.xp || 0) + 75;
+            saveLevels();
+
+            return {
+                status: 'win',
+                word: game.word,
+                message: `🎉 **VICTORY!** <@${guessingUser.id}> guessed the full word correctly: **${game.word}**!\n🪙 **+100 Points** & **+75 XP** awarded!`
+            };
+        } else {
+            game.lives = Math.max(0, game.lives - 1);
+            game.wrongGuesses.add(raw.slice(0, 10));
+
+            if (game.lives <= 0) {
+                activeHangmanGames.delete(game.channelId);
+                return {
+                    status: 'lose',
+                    word: game.word,
+                    message: `💀 **GAME OVER!** "${raw}" was not the word.\nThe correct word was **${game.word}** (*${game.hint}*)!`
+                };
+            }
+
+            return {
+                status: 'wrong_word',
+                message: `❌ "${raw}" is not the word! Lost 1 life. (${game.lives}/6 lives left)`
+            };
+        }
+    }
+
+    // Single Letter Guess
+    const letter = raw;
+    if (!/^[A-Z]$/.test(letter)) return null;
+
+    if (game.guessedLetters.has(letter) || game.wrongGuesses.has(letter)) {
+        return {
+            status: 'already_guessed',
+            message: `⚠️ Letter **${letter}** was already guessed!`
+        };
+    }
+
+    if (game.word.includes(letter)) {
+        game.guessedLetters.add(letter);
+
+        const userRec = getOrCreateUser(guildId, guessingUser.id, userName);
+        userRec.points = (userRec.points || 0) + 10;
+        saveLevels();
+
+        const won = game.word.split('').every(ch => game.guessedLetters.has(ch));
+        if (won) {
+            activeHangmanGames.delete(game.channelId);
+            userRec.points = (userRec.points || 0) + 60;
+            userRec.xp = (userRec.xp || 0) + 50;
+            saveLevels();
+
+            return {
+                status: 'win',
+                word: game.word,
+                message: `🎉 **VICTORY!** <@${guessingUser.id}> revealed the final letter!\nThe word was **${game.word}**! 🪙 **+70 Points** & **+50 XP** awarded!`
+            };
+        }
+
+        return {
+            status: 'correct_letter',
+            letter,
+            message: `✅ Yes! The letter **${letter}** is in the word! (+10 🪙 Points)`
+        };
+    } else {
+        game.wrongGuesses.add(letter);
+        game.lives = Math.max(0, game.lives - 1);
+
+        if (game.lives <= 0) {
+            activeHangmanGames.delete(game.channelId);
+            return {
+                status: 'lose',
+                word: game.word,
+                message: `💀 **GAME OVER!** The letter **${letter}** is not in the word.\nThe correct word was **${game.word}** (*${game.hint}*)!`
+            };
+        }
+
+        return {
+            status: 'wrong_letter',
+            letter,
+            message: `❌ No, **${letter}** is not in the word! (${game.lives}/6 lives left)`
+        };
+    }
+}
+
 // Slash Command Definitions
 const slashCommands = [
     new SlashCommandBuilder()
@@ -1861,6 +2185,25 @@ const slashCommands = [
                 .setDescription('User to check points for (defaults to yourself)')
                 .setRequired(false)
         ),
+    new SlashCommandBuilder()
+        .setName('hangman')
+        .setDescription('Start an interactive Hangman word guessing game in this channel!')
+        .addStringOption(option =>
+            option.setName('category')
+                .setDescription('Word category to play with')
+                .setRequired(false)
+                .addChoices(
+                    { name: '🎲 Random / All (Default)', value: 'all' },
+                    { name: '🎮 Gaming & Video Games', value: 'gaming' },
+                    { name: '🦁 Animals & Wildlife', value: 'animals' },
+                    { name: '💻 Tech, Coding & AI', value: 'tech' },
+                    { name: '🎬 Movies & Cinema', value: 'movies' },
+                    { name: '🌍 General & Fun Words', value: 'general' }
+                )
+        ),
+    new SlashCommandBuilder()
+        .setName('hangman-stop')
+        .setDescription('Stop and forfeit the active Hangman game in this channel'),
     new SlashCommandBuilder()
         .setName('pause')
         .setDescription('Pause current music playback'),
@@ -2024,6 +2367,60 @@ client.on('messageCreate', async (message) => {
             const userData = getOrCreateUser(message.guild.id, targetUser.id, targetMember.displayName || targetUser.username);
             const embed = createPointsEmbed(targetMember, userData);
             return message.reply({ embeds: [embed] }).catch(() => {});
+        }
+
+        // Hangman command: !hangman [category] / !hm [category]
+        if (lower === '!hangman' || lower === '!hm' || lower.startsWith('!hangman ') || lower.startsWith('!hm ')) {
+            const parts = lower.split(/\s+/);
+            const category = parts[1] || 'all';
+
+            if (category === 'stop') {
+                if (activeHangmanGames.has(message.channel.id)) {
+                    const game = activeHangmanGames.get(message.channel.id);
+                    if (game.timeout) clearTimeout(game.timeout);
+                    activeHangmanGames.delete(message.channel.id);
+                    return message.reply(`⏹️ Hangman game stopped! The secret word was **${game.word}** (*${game.hint}*).`).catch(() => {});
+                } else {
+                    return message.reply('❌ No active Hangman game in this channel! Start one with `!hangman`.').catch(() => {});
+                }
+            }
+
+            const game = startHangmanGame(message.channel.id, category, message.author);
+            const embed = renderHangmanDisplay(game);
+            return message.reply({ content: `🎮 **Hangman game started by <@${message.author.id}>!**`, embeds: [embed] }).catch(() => {});
+        }
+
+        // Hangman active game letter / word guesser
+        if (activeHangmanGames.has(message.channel.id)) {
+            const game = activeHangmanGames.get(message.channel.id);
+            const text = message.content.trim();
+            const textLower = text.toLowerCase();
+
+            if (textLower === '!forfeit' || textLower === '!giveup' || textLower === '!endhangman') {
+                if (game.timeout) clearTimeout(game.timeout);
+                activeHangmanGames.delete(message.channel.id);
+                return message.reply(`🏳️ **Game Forfeited!** The secret word was **${game.word}** (*${game.hint}*). Start a new game with \`!hangman\`!`).catch(() => {});
+            }
+
+            let guess = null;
+            if (/^[a-zA-Z]$/.test(text)) {
+                guess = text;
+            } else if (/^!(g|guess)\s+([a-zA-Z]+)$/i.test(text)) {
+                const match = text.match(/^!(g|guess)\s+([a-zA-Z]+)$/i);
+                if (match) guess = match[2];
+            }
+
+            if (guess) {
+                const result = processHangmanGuess(game, guess, message.member || message.author, message.guild.id);
+                if (result) {
+                    if (result.status === 'already_guessed') {
+                        return message.reply(result.message).catch(() => {});
+                    } else {
+                        const updatedEmbed = renderHangmanDisplay(game);
+                        return message.reply({ content: result.message, embeds: [updatedEmbed] }).catch(() => {});
+                    }
+                }
+            }
         }
     }
 
@@ -2328,6 +2725,35 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.reply({ embeds: [embed] });
     }
 
+    // --- /hangman ---
+    if (commandName === 'hangman') {
+        if (!interaction.guild) {
+            return interaction.reply({ content: '❌ Hangman is server-specific! Please run this command inside a server channel.', ephemeral: true });
+        }
+
+        const category = interaction.options.getString('category') || 'all';
+        const game = startHangmanGame(interaction.channelId, category, interaction.user);
+        const embed = renderHangmanDisplay(game);
+
+        return interaction.reply({
+            content: `🎮 **Hangman started by <@${interaction.user.id}>!**`,
+            embeds: [embed]
+        });
+    }
+
+    // --- /hangman-stop ---
+    if (commandName === 'hangman-stop') {
+        if (!activeHangmanGames.has(interaction.channelId)) {
+            return interaction.reply({ content: '❌ No active Hangman game in this channel! Start one with `/hangman`.', ephemeral: true });
+        }
+
+        const game = activeHangmanGames.get(interaction.channelId);
+        if (game.timeout) clearTimeout(game.timeout);
+        activeHangmanGames.delete(interaction.channelId);
+
+        return interaction.reply({ content: `⏹️ Hangman game stopped! The secret word was **${game.word}** (*${game.hint}*).` });
+    }
+
     // --- /play ---
     if (commandName === 'play') {
         const query = interaction.options.getString('query');
@@ -2579,6 +3005,7 @@ client.on('interactionCreate', async (interaction) => {
             .addFields(
                 { name: '🏆 Leveling & Rank (Arcade System)', value: '`/rank [user]` (or `!rank`) — Check rank card (Level, XP, texts sent, call time, points)\n`/leaderboard [type]` (or `!top`) — Server leaderboard (Top 10 by XP or Points)' },
                 { name: '🪙 Economy & Card Themes Shop', value: '`/shop` (or `!shop`) — Browse cool & natural rank card themes\n`/buy <theme>` (or `!buy <theme>`) — Purchase a card theme with points\n`/equip <theme>` (or `!equip <theme>`) — Equip an owned card theme\n`/daily` (or `!daily`) — Claim daily reward (+200 points every 24h)\n`/points [user]` (or `!points`) — View wallet, points, and owned themes' },
+                { name: '🎮 Arcade Minigames', value: '`/hangman [category]` (or `!hangman`) — Interactive Hangman game with real words & ASCII art!\n• Type single letters in chat (e.g. `e`, `a`) or full words to guess!\n• Earn points & XP for finding letters and winning!\n`/hangman-stop` (or `!forfeit`) — Forfeit active game' },
                 { name: '🧠 AI Chat & Web Search', value: '• **Mention `@null`** in any channel to chat!\n• **Reply to null\'s messages** to continue the conversation!\n• `/ask <question> [image]` — Ask AI (Groq for text, Gemini Vision for images/GIFs)\n• Remembers **50 messages** of history and knows server members & roles!' },
                 { name: '🎶 Music Playback', value: '`/play <song>` — Play songs or playlists (YouTube, Spotify, SoundCloud)\n`/pause` — Pause music\n`/resume` — Resume music\n`/skip` — Skip to next song\n`/stop` — Stop playback & disconnect' },
                 { name: '📜 Queue & Audio', value: '`/nowplaying` — Live song display with progress bar & buttons\n`/queue` — Show upcoming songs\n`/shuffle` — Shuffle the queue\n`/volume <1-100>` — Change playback volume' },
