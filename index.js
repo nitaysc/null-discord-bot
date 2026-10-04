@@ -1020,6 +1020,110 @@ try {
     console.warn('[Canvas Notice] @napi-rs/canvas not available, will use embed fallback:', e.message);
 }
 
+// ==========================================
+// 🎨 CARD THEMES & PALETTES SHOP
+// ==========================================
+const CARD_THEMES = {
+    arcane: {
+        id: 'arcane',
+        name: 'Arcane Classic',
+        price: 0,
+        emoji: '💎',
+        category: 'Classic',
+        description: 'Iconic Arcane dark charcoal with vibrant turquoise polygon.',
+        bg: '#202225',
+        accent: '#2bb6a6',
+        accentSecondary: '#1f8b7f',
+        textPrimary: '#ffffff',
+        textSecondary: '#b5bac1',
+        barBg: '#ffffff'
+    },
+    cyberpunk: {
+        id: 'cyberpunk',
+        name: 'Cyberpunk Neon',
+        price: 400,
+        emoji: '⚡',
+        category: 'Crazy & Cool',
+        description: 'Futuristic synthwave with neon hot pink and electric cyan.',
+        bg: '#140c1f',
+        accent: '#ff007f',
+        accentSecondary: '#00f0ff',
+        textPrimary: '#ffffff',
+        textSecondary: '#d8b4f8',
+        barBg: '#2a1b3d'
+    },
+    galaxy: {
+        id: 'galaxy',
+        name: 'Cosmic Galaxy',
+        price: 500,
+        emoji: '🌌',
+        category: 'Crazy & Cool',
+        description: 'Deep starlight abyss with royal amethyst purple and gold.',
+        bg: '#0d1117',
+        accent: '#8a2be2',
+        accentSecondary: '#ffd700',
+        textPrimary: '#ffffff',
+        textSecondary: '#c9d1d9',
+        barBg: '#1e1e2f'
+    },
+    crimson: {
+        id: 'crimson',
+        name: 'Bloodmoon Crimson',
+        price: 450,
+        emoji: '🩸',
+        category: 'Crazy & Cool',
+        description: 'Obsidian black with blazing ruby red and wine accents.',
+        bg: '#181112',
+        accent: '#ff2a4b',
+        accentSecondary: '#99001a',
+        textPrimary: '#ffffff',
+        textSecondary: '#d4afb3',
+        barBg: '#2c181a'
+    },
+    nature: {
+        id: 'nature',
+        name: 'Forest Emerald',
+        price: 350,
+        emoji: '🌿',
+        category: 'Natural',
+        description: 'Serene dark pine moss with lush emerald green and jade.',
+        bg: '#121a15',
+        accent: '#2ecc71',
+        accentSecondary: '#27ae60',
+        textPrimary: '#ffffff',
+        textSecondary: '#a3cfbb',
+        barBg: '#1e2d24'
+    },
+    sunset: {
+        id: 'sunset',
+        name: 'Golden Sunset',
+        price: 350,
+        emoji: '🌅',
+        category: 'Natural',
+        description: 'Warm espresso dusk with radiant sunset coral and amber.',
+        bg: '#1c1514',
+        accent: '#ff7e47',
+        accentSecondary: '#f39c12',
+        textPrimary: '#ffffff',
+        textSecondary: '#dfb8aa',
+        barBg: '#2f201d'
+    },
+    ocean: {
+        id: 'ocean',
+        name: 'Abyssal Ocean',
+        price: 400,
+        emoji: '🌊',
+        category: 'Natural',
+        description: 'Deep ocean abyss with Caribbean lagoon aqua and seafoam.',
+        bg: '#0e1a24',
+        accent: '#00c0f0',
+        accentSecondary: '#0077b6',
+        textPrimary: '#ffffff',
+        textSecondary: '#9ec5e4',
+        barBg: '#162b3c'
+    }
+};
+
 const LEVELS_FILE = path.resolve(__dirname, 'levels.json');
 let levelsCache = {};
 let levelsDirty = false;
@@ -1073,13 +1177,23 @@ function getOrCreateUser(guildId, userId, username = 'Unknown') {
             xp: 0,
             messages: 0,
             voiceMinutes: 0,
+            points: 100, // 100 free starting points
+            inventory: ['arcane'],
+            equippedTheme: 'arcane',
             lastTextXp: 0,
+            lastDaily: 0,
             username: username
         };
         saveLevels();
-    } else if (username && username !== 'Unknown' && levelsCache[key].username !== username) {
-        levelsCache[key].username = username;
-        levelsDirty = true;
+    } else {
+        // Upgrade existing records if fields are missing
+        if (levelsCache[key].points === undefined) levelsCache[key].points = 0;
+        if (!levelsCache[key].inventory) levelsCache[key].inventory = ['arcane'];
+        if (!levelsCache[key].equippedTheme) levelsCache[key].equippedTheme = 'arcane';
+        if (username && username !== 'Unknown' && levelsCache[key].username !== username) {
+            levelsCache[key].username = username;
+            levelsDirty = true;
+        }
     }
     return levelsCache[key];
 }
@@ -1110,10 +1224,10 @@ function calculateLevelData(totalXp) {
 }
 
 // Calculates rank (#1, #2, etc.) for a user within a specific guild
-function getUserRank(guildId, targetUserId) {
+function getUserRank(guildId, targetUserId, sortBy = 'xp') {
     const guildEntries = Object.values(levelsCache)
-        .filter(entry => entry.guildId === guildId && ((entry.xp || 0) > 0 || (entry.messages || 0) > 0 || (entry.voiceMinutes || 0) > 0))
-        .sort((a, b) => (b.xp || 0) - (a.xp || 0));
+        .filter(entry => entry.guildId === guildId && ((entry.xp || 0) > 0 || (entry.messages || 0) > 0 || (entry.voiceMinutes || 0) > 0 || (entry.points || 0) > 0))
+        .sort((a, b) => sortBy === 'points' ? ((b.points || 0) - (a.points || 0)) : ((b.xp || 0) - (a.xp || 0)));
 
     const totalRanked = Math.max(guildEntries.length, 1);
     const index = guildEntries.findIndex(e => e.userId === targetUserId);
@@ -1121,11 +1235,11 @@ function getUserRank(guildId, targetUserId) {
     return { rank, totalRanked };
 }
 
-// Returns top ranked users in the guild
-function getGuildLeaderboard(guildId, limit = 10) {
+// Returns top ranked users in the guild by XP or points
+function getGuildLeaderboard(guildId, limit = 10, sortBy = 'xp') {
     return Object.values(levelsCache)
-        .filter(entry => entry.guildId === guildId && ((entry.xp || 0) > 0 || (entry.messages || 0) > 0 || (entry.voiceMinutes || 0) > 0))
-        .sort((a, b) => (b.xp || 0) - (a.xp || 0))
+        .filter(entry => entry.guildId === guildId && ((entry.xp || 0) > 0 || (entry.messages || 0) > 0 || (entry.voiceMinutes || 0) > 0 || (entry.points || 0) > 0))
+        .sort((a, b) => sortBy === 'points' ? ((b.points || 0) - (a.points || 0)) : ((b.xp || 0) - (a.xp || 0)))
         .slice(0, limit);
 }
 
@@ -1160,7 +1274,7 @@ function roundRect(ctx, x, y, width, height, radius) {
     ctx.closePath();
 }
 
-// Awards text message XP & increments message counter with instant persistent saving
+// Awards text message XP & points & increments message counter with instant persistent saving
 function trackMessageForLeveling(message) {
     if (!message.guild || message.author.bot) return;
 
@@ -1171,15 +1285,22 @@ function trackMessageForLeveling(message) {
     // 60-second cooldown between message XP drops to prevent spam farming
     if (now - (user.lastTextXp || 0) >= 60000) {
         const xpGain = Math.floor(Math.random() * 11) + 15; // 15 - 25 XP
+        const pointsGain = Math.floor(Math.random() * 6) + 5; // 5 - 10 Points
         const oldLevel = calculateLevelData(user.xp).level;
+
         user.xp = (user.xp || 0) + xpGain;
+        user.points = (user.points || 0) + pointsGain;
         user.lastTextXp = now;
         saveLevels(); // Save immediately to disk
 
         const newLevel = calculateLevelData(user.xp).level;
         if (newLevel > oldLevel) {
+            const bonusPoints = newLevel * 50; // Bonus points on level up
+            user.points = (user.points || 0) + bonusPoints;
+            saveLevels();
+
             message.channel.send({
-                content: `🎉 **Level Up!** <@${message.author.id}>, you advanced to **Level ${newLevel}**! ⭐`
+                content: `🎉 **Level Up!** <@${message.author.id}>, you advanced to **Level ${newLevel}** and received **+${bonusPoints} Points**! ⭐🪙`
             }).catch(() => {});
         }
     } else {
@@ -1188,7 +1309,7 @@ function trackMessageForLeveling(message) {
 }
 
 // Background Voice Call Tracker (Ticks every 60 seconds)
-// Awards call minutes and voice XP for active members in voice channels with instant saving
+// Awards call minutes, voice XP and points for active members in voice channels with instant saving
 setInterval(() => {
     try {
         if (!client.guilds || client.guilds.cache.size === 0) return;
@@ -1210,15 +1331,21 @@ setInterval(() => {
                         user.voiceMinutes = (user.voiceMinutes || 0) + 1;
 
                         const xpGain = Math.floor(Math.random() * 6) + 10; // 10 - 15 XP per minute
+                        const pointsGain = Math.floor(Math.random() * 4) + 5; // 5 - 8 Points per minute
                         const oldLevel = calculateLevelData(user.xp).level;
+
                         user.xp = (user.xp || 0) + xpGain;
+                        user.points = (user.points || 0) + pointsGain;
                         anyChanged = true;
 
                         const newLevel = calculateLevelData(user.xp).level;
                         if (newLevel > oldLevel) {
+                            const bonusPoints = newLevel * 50;
+                            user.points = (user.points || 0) + bonusPoints;
+
                             if (channel.send) {
                                 channel.send({
-                                    content: `🎉 **Level Up!** <@${member.id}>, your time in call elevated you to **Level ${newLevel}**! ⭐`
+                                    content: `🎉 **Level Up!** <@${member.id}>, your time in call elevated you to **Level ${newLevel}** (+${bonusPoints} Points)! ⭐🪙`
                                 }).catch(() => {});
                             }
                         }
@@ -1232,7 +1359,7 @@ setInterval(() => {
     }
 }, 60000).unref();
 
-// Generates authentic Arcane-style graphical rank card image (PNG)
+// Generates authentic Arcane-style graphical rank card image (PNG) using equipped theme
 async function generateRankCardImage(member, userData) {
     if (!canvasModule) return null;
     try {
@@ -1242,31 +1369,53 @@ async function generateRankCardImage(member, userData) {
         const levelData = calculateLevelData(totalXp);
         const { rank, totalRanked } = getUserRank(member.guild.id, member.id);
 
+        const themeId = userData.equippedTheme || 'arcane';
+        const theme = CARD_THEMES[themeId] || CARD_THEMES.arcane;
+        const accentColor = theme.accent;
+
         const width = 850;
         const height = 230;
         const canvas = createCanvas(width, height);
         const ctx = canvas.getContext('2d');
 
-        const accentColor = '#2bb6a6'; // Arcane signature teal accent
-
-        // 1. Dark Card Background
-        ctx.fillStyle = '#202225';
+        // 1. Dark Card Background (Themed)
+        ctx.fillStyle = theme.bg;
         roundRect(ctx, 0, 0, width, height, 14);
         ctx.fill();
 
-        // 2. Right-side Arcane polygon accent
+        // 2. Right-side Arcane polygon accent (Dual-tone)
         ctx.save();
         roundRect(ctx, 0, 0, width, height, 14);
         ctx.clip();
+
+        // Secondary angle
         ctx.beginPath();
-        ctx.moveTo(610, 0);
+        ctx.moveTo(590, 0);
         ctx.lineTo(width, 0);
         ctx.lineTo(width, height);
-        ctx.lineTo(700, height);
+        ctx.lineTo(670, height);
+        ctx.closePath();
+        ctx.fillStyle = theme.accentSecondary;
+        ctx.fill();
+
+        // Primary angle
+        ctx.beginPath();
+        ctx.moveTo(620, 0);
+        ctx.lineTo(width, 0);
+        ctx.lineTo(width, height);
+        ctx.lineTo(705, height);
         ctx.closePath();
         ctx.fillStyle = accentColor;
         ctx.fill();
+
         ctx.restore();
+
+        // Theme Badge (Top Right)
+        ctx.fillStyle = theme.accent;
+        ctx.font = 'bold 15px "Segoe UI", Arial, sans-serif';
+        ctx.textAlign = 'right';
+        ctx.fillText(`${theme.emoji} ${theme.name}`, 820, 32);
+        ctx.textAlign = 'left';
 
         // 3. User Avatar
         const avX = 85;
@@ -1315,7 +1464,7 @@ async function generateRankCardImage(member, userData) {
         // 4. Username Text
         ctx.textAlign = 'left';
         ctx.textBaseline = 'alphabetic';
-        ctx.fillStyle = '#ffffff';
+        ctx.fillStyle = theme.textPrimary;
         ctx.font = 'bold 30px "Segoe UI", Arial, sans-serif';
         const displayName = member.displayName || member.user.username;
         const cleanUser = displayName.startsWith('@') ? displayName : `@${displayName}`;
@@ -1332,29 +1481,29 @@ async function generateRankCardImage(member, userData) {
         ctx.stroke();
 
         // 6. Stats Row 1: Level, XP, Rank
-        ctx.fillStyle = '#ffffff';
+        ctx.fillStyle = theme.textPrimary;
         ctx.font = '600 20px "Segoe UI", Arial, sans-serif';
         const rankText = rank ? `   Rank: #${rank}` : '';
         ctx.fillText(`Level: ${levelData.level}   XP: ${formatK(levelData.currentXp)} / ${formatK(levelData.neededXp)}${rankText}`, 160, 112);
 
-        // 7. Stats Row 2: Texts sent, Minutes in call
-        ctx.fillStyle = '#b5bac1';
+        // 7. Stats Row 2: Texts sent, Minutes in call, Points
+        ctx.fillStyle = theme.textSecondary;
         ctx.font = '500 16px "Segoe UI", Arial, sans-serif';
-        ctx.fillText(`Texts: ${(userData.messages || 0).toLocaleString()}   •   In Call: ${formatVoiceDuration(userData.voiceMinutes || 0)}`, 160, 142);
+        ctx.fillText(`Texts: ${(userData.messages || 0).toLocaleString()}   •   In Call: ${formatVoiceDuration(userData.voiceMinutes || 0)}   •   Points: ${(userData.points || 0).toLocaleString()} 🪙`, 160, 142);
 
-        // 8. Progress Bar (Arcane Pill Capsule)
+        // 8. Progress Bar (Pill Capsule with themed background and fill)
         const barX = 30;
         const barY = 175;
         const barW = 790;
         const barH = 26;
         const barR = 13;
 
-        // Outer white capsule
-        ctx.fillStyle = '#ffffff';
+        // Outer capsule
+        ctx.fillStyle = theme.barBg;
         roundRect(ctx, barX, barY, barW, barH, barR);
         ctx.fill();
 
-        // Filled teal portion
+        // Filled portion
         const ratio = Math.min(Math.max(levelData.currentXp / Math.max(levelData.neededXp, 1), 0), 1);
         const fillW = Math.max(barH, Math.round(barW * ratio));
 
@@ -1388,15 +1537,15 @@ function createRankCardEmbed(member, userData) {
     const levelData = calculateLevelData(totalXp);
     const { rank, totalRanked } = getUserRank(member.guild.id, member.id);
 
+    const theme = CARD_THEMES[userData.equippedTheme] || CARD_THEMES.arcane;
     const progressBar = createProgressBar(levelData.currentXp, levelData.neededXp, 12);
-    const color = member.displayColor || 0x2BB6A6;
 
     const embed = new EmbedBuilder()
         .setAuthor({
-            name: `${member.displayName}'s Rank Profile`,
+            name: `${member.displayName}'s Rank Profile (${theme.emoji} ${theme.name})`,
             iconURL: member.user.displayAvatarURL({ dynamic: true })
         })
-        .setColor(color)
+        .setColor(0x2BB6A6)
         .setThumbnail(member.user.displayAvatarURL({ dynamic: true, size: 256 }))
         .addFields(
             { name: '🏆 Server Rank', value: `**#${rank}** of ${totalRanked}`, inline: true },
@@ -1408,24 +1557,65 @@ function createRankCardEmbed(member, userData) {
                 inline: false
             },
             { name: '💬 Texts Sent', value: `**${(userData.messages || 0).toLocaleString()}** messages`, inline: true },
-            { name: '🎙️ Minutes in Call', value: `**${formatVoiceDuration(userData.voiceMinutes || 0)}**`, inline: true }
+            { name: '🎙️ Minutes in Call', value: `**${formatVoiceDuration(userData.voiceMinutes || 0)}**`, inline: true },
+            { name: '🪙 Points Balance', value: `**${(userData.points || 0).toLocaleString()}** Points`, inline: true }
         )
-        .setFooter({ text: 'null Leveling • Send messages & join voice calls to level up!' })
+        .setFooter({ text: `Theme: ${theme.name} • Earn points via chatting, calls & /daily!` })
         .setTimestamp();
 
     return embed;
 }
 
-// Builds the Server Leaderboard Embed
-function createLeaderboardEmbed(guild, requestingMember) {
-    const topUsers = getGuildLeaderboard(guild.id, 10);
+// Builds the Card Themes Shop Embed
+function createShopEmbed(userData) {
+    const balance = (userData.points || 0).toLocaleString();
+    const inventory = userData.inventory || ['arcane'];
+    const equipped = userData.equippedTheme || 'arcane';
+    const equippedTheme = CARD_THEMES[equipped] || CARD_THEMES.arcane;
+
     const embed = new EmbedBuilder()
-        .setTitle(`🏆 ${guild.name} — Leveling Leaderboard`)
+        .setTitle('🛍️ Rank Card Themes Shop')
+        .setDescription(`Earn points by chatting, joining voice calls, or claiming \`/daily\`!\n💰 **Your Balance:** **${balance}** 🪙 Points\n🎨 **Currently Equipped:** **${equippedTheme.emoji} ${equippedTheme.name}**\n\n*Purchase a theme with \`/buy <theme>\` and equip it with \`/equip <theme>\`!*`)
+        .setColor(0x2BB6A6);
+
+    const categories = {
+        'Crazy & Cool': [],
+        'Natural': [],
+        'Classic': []
+    };
+
+    for (const [id, t] of Object.entries(CARD_THEMES)) {
+        const isOwned = inventory.includes(id);
+        const isEquipped = equipped === id;
+        let status = isEquipped ? '🟢 **[EQUIPPED]**' : (isOwned ? '✅ **[OWNED]**' : `🪙 **${t.price} Points**`);
+        const itemLine = `${t.emoji} **${t.name}** (\`${t.id}\`) — ${status}\n*${t.description}*`;
+        if (categories[t.category]) {
+            categories[t.category].push(itemLine);
+        }
+    }
+
+    embed.addFields(
+        { name: '⚡ Crazy & Cool Themes', value: categories['Crazy & Cool'].join('\n\n'), inline: false },
+        { name: '🌿 Natural Themes', value: categories['Natural'].join('\n\n'), inline: false },
+        { name: '💎 Classic Themes', value: categories['Classic'].join('\n\n'), inline: false }
+    );
+
+    embed.setFooter({ text: 'Commands: /shop • /buy <theme> • /equip <theme> • /daily' });
+    return embed;
+}
+
+// Builds the Server Leaderboard Embed (XP or Points)
+function createLeaderboardEmbed(guild, requestingMember, type = 'xp') {
+    const isPoints = type === 'points';
+    const topUsers = getGuildLeaderboard(guild.id, 10, isPoints ? 'points' : 'xp');
+
+    const embed = new EmbedBuilder()
+        .setTitle(isPoints ? `🪙 ${guild.name} — Points Leaderboard` : `🏆 ${guild.name} — Leveling Leaderboard`)
         .setColor(0x2BB6A6)
         .setThumbnail(guild.iconURL({ dynamic: true }) || null);
 
     if (topUsers.length === 0) {
-        embed.setDescription('No members have earned XP yet! Start texting and joining voice calls to be #1!');
+        embed.setDescription('No members have earned XP or points yet! Start texting, joining calls, or claim `/daily` to be #1!');
         return embed;
     }
 
@@ -1434,19 +1624,144 @@ function createLeaderboardEmbed(guild, requestingMember) {
         const medal = medals[i] || `\`#${i + 1}\``;
         const levelData = calculateLevelData(u.xp || 0);
         const name = u.username || `<@${u.userId}>`;
-        return `${medal} **${name}** • **Level ${levelData.level}** (${(u.xp || 0).toLocaleString()} XP)\n   ↳ 💬 ${(u.messages || 0).toLocaleString()} texts • 🎙️ ${formatVoiceDuration(u.voiceMinutes || 0)}`;
+        const theme = CARD_THEMES[u.equippedTheme] || CARD_THEMES.arcane;
+
+        if (isPoints) {
+            return `${medal} **${name}** [${theme.emoji} ${theme.name}] • **${(u.points || 0).toLocaleString()} 🪙 Points** (Level ${levelData.level})`;
+        } else {
+            return `${medal} **${name}** [${theme.emoji}] • **Level ${levelData.level}** (${(u.xp || 0).toLocaleString()} XP) • ${(u.points || 0).toLocaleString()} 🪙\n   ↳ 💬 ${(u.messages || 0).toLocaleString()} texts • 🎙️ ${formatVoiceDuration(u.voiceMinutes || 0)}`;
+        }
     });
 
     embed.setDescription(lines.join('\n\n'));
 
     if (requestingMember) {
-        const { rank, totalRanked } = getUserRank(guild.id, requestingMember.id);
         const userRec = getOrCreateUser(guild.id, requestingMember.id, requestingMember.displayName);
         const userLevel = calculateLevelData(userRec.xp || 0).level;
+        const theme = CARD_THEMES[userRec.equippedTheme] || CARD_THEMES.arcane;
+        const { rank, totalRanked } = getUserRank(guild.id, requestingMember.id, isPoints ? 'points' : 'xp');
         embed.setFooter({
-            text: `Your Rank: #${rank} of ${totalRanked} (Level ${userLevel} • ${(userRec.xp || 0).toLocaleString()} XP)`
+            text: `Your Stats: #${rank} of ${totalRanked} • Level ${userLevel} • ${(userRec.xp || 0).toLocaleString()} XP • ${(userRec.points || 0).toLocaleString()} 🪙 • Equipped: ${theme.emoji} ${theme.name}`
         });
     }
+
+    return embed;
+}
+
+// Handles theme purchase
+function handleBuyTheme(guildId, userId, username, themeKey) {
+    const user = getOrCreateUser(guildId, userId, username);
+    const themeId = (themeKey || '').toLowerCase().trim();
+    const theme = CARD_THEMES[themeId];
+
+    if (!theme) {
+        return { success: false, message: `❌ Theme \`${themeKey}\` not found! Use \`/shop\` to see available themes.` };
+    }
+
+    user.inventory = user.inventory || ['arcane'];
+    if (user.inventory.includes(themeId)) {
+        return { success: false, message: `⚠️ You already own **${theme.emoji} ${theme.name}**! Use \`/equip ${themeId}\` to equip it.` };
+    }
+
+    if ((user.points || 0) < theme.price) {
+        return {
+            success: false,
+            message: `❌ Not enough points! **${theme.emoji} ${theme.name}** costs **${theme.price} 🪙 Points**, but you have **${(user.points || 0).toLocaleString()} 🪙 Points**.\nEarn more points by chatting, joining voice calls, or claiming \`/daily\`!`
+        };
+    }
+
+    user.points -= theme.price;
+    user.inventory.push(themeId);
+    user.equippedTheme = themeId;
+    saveLevels();
+
+    return {
+        success: true,
+        message: `🎉 **Theme Purchased!** You bought and equipped **${theme.emoji} ${theme.name}** for **${theme.price} 🪙 Points**!\n💰 Remaining balance: **${user.points.toLocaleString()} 🪙 Points**\nCheck out your new look with \`/rank\`!`
+    };
+}
+
+// Handles theme equipping
+function handleEquipTheme(guildId, userId, username, themeKey) {
+    const user = getOrCreateUser(guildId, userId, username);
+    const themeId = (themeKey || '').toLowerCase().trim();
+    const theme = CARD_THEMES[themeId];
+
+    if (!theme) {
+        return { success: false, message: `❌ Theme \`${themeKey}\` not found! Use \`/shop\` to see available themes.` };
+    }
+
+    user.inventory = user.inventory || ['arcane'];
+    if (!user.inventory.includes(themeId)) {
+        return { success: false, message: `🔒 You don't own **${theme.emoji} ${theme.name}** yet! Buy it from the \`/shop\` with \`/buy ${themeId}\`.` };
+    }
+
+    if (user.equippedTheme === themeId) {
+        return { success: false, message: `ℹ️ **${theme.emoji} ${theme.name}** is already equipped!` };
+    }
+
+    user.equippedTheme = themeId;
+    saveLevels();
+
+    return {
+        success: true,
+        message: `🎨 **Equipped!** Your rank card is now styled with **${theme.emoji} ${theme.name}**!\nType \`/rank\` to see your card.`
+    };
+}
+
+// Handles daily 200 points reward (24h cooldown)
+function handleDailyReward(guildId, userId, username) {
+    const user = getOrCreateUser(guildId, userId, username);
+    const now = Date.now();
+    const COOLDOWN_MS = 24 * 60 * 60 * 1000;
+    const elapsed = now - (user.lastDaily || 0);
+
+    if (elapsed < COOLDOWN_MS) {
+        const remainingMs = COOLDOWN_MS - elapsed;
+        const remHours = Math.floor(remainingMs / (1000 * 60 * 60));
+        const remMins = Math.floor((remainingMs % (1000 * 60 * 60)) / (1000 * 60));
+        return {
+            claimed: false,
+            message: `⏳ You already claimed your daily reward today! Come back in **${remHours}h ${remMins}m**.`
+        };
+    }
+
+    const DAILY_POINTS = 200;
+    user.points = (user.points || 0) + DAILY_POINTS;
+    user.lastDaily = now;
+    saveLevels();
+
+    return {
+        claimed: true,
+        message: `🎁 **Daily Reward Claimed!** You received **+${DAILY_POINTS} 🪙 Points**!\n💰 Balance: **${user.points.toLocaleString()} 🪙 Points**\nBrowse new themes in \`/shop\`!`
+    };
+}
+
+// Builds the Points Wallet Embed
+function createPointsEmbed(member, userData) {
+    const theme = CARD_THEMES[userData.equippedTheme] || CARD_THEMES.arcane;
+    const inventory = userData.inventory || ['arcane'];
+    const totalThemes = Object.keys(CARD_THEMES).length;
+    const levelData = calculateLevelData(userData.xp || 0);
+
+    const embed = new EmbedBuilder()
+        .setAuthor({
+            name: `${member.displayName}'s Wallet & Economy`,
+            iconURL: member.user.displayAvatarURL({ dynamic: true })
+        })
+        .setColor(0x2BB6A6)
+        .setThumbnail(member.user.displayAvatarURL({ dynamic: true, size: 256 }))
+        .addFields(
+            { name: '🪙 Points Balance', value: `**${(userData.points || 0).toLocaleString()}** Points`, inline: true },
+            { name: '🎨 Equipped Theme', value: `${theme.emoji} **${theme.name}**`, inline: true },
+            { name: '🎒 Themes Owned', value: `**${inventory.length}** / ${totalThemes} themes`, inline: true },
+            { name: '⭐ Level & Rank', value: `Level **${levelData.level}** (${(userData.xp || 0).toLocaleString()} XP)`, inline: true },
+            { name: '💬 Texts Sent', value: `**${(userData.messages || 0).toLocaleString()}**`, inline: true },
+            { name: '🎙️ Call Time', value: `**${formatVoiceDuration(userData.voiceMinutes || 0)}**`, inline: true },
+            { name: '💡 How to Earn More Points', value: '• **Chat in channels:** 5 - 10 pts per message\n• **Join Voice Channels:** 5 - 8 pts per minute\n• **Level Up:** `Level * 50` bonus pts!\n• **`/daily`:** Claim 200 pts every 24h\n• Spend points in `/shop` for crazy & cool card themes!', inline: false }
+        )
+        .setFooter({ text: 'null Economy • /shop • /buy • /equip • /daily' })
+        .setTimestamp();
 
     return embed;
 }
@@ -1484,7 +1799,63 @@ const slashCommands = [
         ),
     new SlashCommandBuilder()
         .setName('leaderboard')
-        .setDescription('View the server leveling leaderboard (Top 10 members by Level & XP)'),
+        .setDescription('View the server leaderboard (Top 10 members)')
+        .addStringOption(option =>
+            option.setName('type')
+                .setDescription('Sort leaderboard by XP or Points')
+                .setRequired(false)
+                .addChoices(
+                    { name: '🏆 Level & XP (Default)', value: 'xp' },
+                    { name: '🪙 Points Balance', value: 'points' }
+                )
+        ),
+    new SlashCommandBuilder()
+        .setName('shop')
+        .setDescription('Browse the rank card themes shop and view theme prices'),
+    new SlashCommandBuilder()
+        .setName('buy')
+        .setDescription('Purchase a rank card theme with your points')
+        .addStringOption(option =>
+            option.setName('theme')
+                .setDescription('The theme you want to purchase')
+                .setRequired(true)
+                .addChoices(
+                    { name: '⚡ Cyberpunk Neon (400 pts)', value: 'cyberpunk' },
+                    { name: '🌌 Cosmic Galaxy (500 pts)', value: 'galaxy' },
+                    { name: '🩸 Bloodmoon Crimson (450 pts)', value: 'crimson' },
+                    { name: '🌿 Forest Emerald (350 pts)', value: 'nature' },
+                    { name: '🌅 Golden Sunset (350 pts)', value: 'sunset' },
+                    { name: '🌊 Abyssal Ocean (400 pts)', value: 'ocean' }
+                )
+        ),
+    new SlashCommandBuilder()
+        .setName('equip')
+        .setDescription('Equip an owned rank card theme to your profile')
+        .addStringOption(option =>
+            option.setName('theme')
+                .setDescription('The theme you want to equip')
+                .setRequired(true)
+                .addChoices(
+                    { name: '💎 Classic Arcane (Default)', value: 'arcane' },
+                    { name: '⚡ Cyberpunk Neon', value: 'cyberpunk' },
+                    { name: '🌌 Cosmic Galaxy', value: 'galaxy' },
+                    { name: '🩸 Bloodmoon Crimson', value: 'crimson' },
+                    { name: '🌿 Forest Emerald', value: 'nature' },
+                    { name: '🌅 Golden Sunset', value: 'sunset' },
+                    { name: '🌊 Abyssal Ocean', value: 'ocean' }
+                )
+        ),
+    new SlashCommandBuilder()
+        .setName('daily')
+        .setDescription('Claim your daily reward of 200 points! (Once every 24 hours)'),
+    new SlashCommandBuilder()
+        .setName('points')
+        .setDescription('Check your points balance, inventory, and equipped card theme')
+        .addUserOption(option =>
+            option.setName('user')
+                .setDescription('User to check points for (defaults to yourself)')
+                .setRequired(false)
+        ),
     new SlashCommandBuilder()
         .setName('pause')
         .setDescription('Pause current music playback'),
@@ -1607,9 +1978,47 @@ client.on('messageCreate', async (message) => {
             }
         }
 
-        if (lower === '!leaderboard' || lower === '!top' || lower === '!lb') {
-            const lbEmbed = createLeaderboardEmbed(message.guild, message.member);
+        if (lower === '!leaderboard' || lower === '!top' || lower === '!lb' || lower.startsWith('!top ') || lower.startsWith('!leaderboard ')) {
+            const isPoints = lower.includes('point');
+            const lbEmbed = createLeaderboardEmbed(message.guild, message.member, isPoints ? 'points' : 'xp');
             return message.reply({ embeds: [lbEmbed] }).catch(() => {});
+        }
+
+        if (lower === '!shop') {
+            const userData = getOrCreateUser(message.guild.id, message.author.id, message.member?.displayName || message.author.username);
+            const shopEmbed = createShopEmbed(userData);
+            return message.reply({ embeds: [shopEmbed] }).catch(() => {});
+        }
+
+        if (lower.startsWith('!buy ') || lower === '!buy') {
+            const themeKey = lower.replace('!buy', '').trim();
+            if (!themeKey) {
+                return message.reply('💡 Usage: `!buy <theme>` (e.g. `!buy cyberpunk`, `!buy galaxy`, `!buy nature`). Type `!shop` to see themes.').catch(() => {});
+            }
+            const res = handleBuyTheme(message.guild.id, message.author.id, message.member?.displayName || message.author.username, themeKey);
+            return message.reply(res.message).catch(() => {});
+        }
+
+        if (lower.startsWith('!equip ') || lower === '!equip') {
+            const themeKey = lower.replace('!equip', '').trim();
+            if (!themeKey) {
+                return message.reply('💡 Usage: `!equip <theme>` (e.g. `!equip cyberpunk`, `!equip arcane`). Type `!shop` to view your owned themes.').catch(() => {});
+            }
+            const res = handleEquipTheme(message.guild.id, message.author.id, message.member?.displayName || message.author.username, themeKey);
+            return message.reply(res.message).catch(() => {});
+        }
+
+        if (lower === '!daily') {
+            const res = handleDailyReward(message.guild.id, message.author.id, message.member?.displayName || message.author.username);
+            return message.reply(res.message).catch(() => {});
+        }
+
+        if (lower === '!points' || lower === '!balance' || lower.startsWith('!points ') || lower.startsWith('!balance ')) {
+            const targetUser = message.mentions.users.first() || message.author;
+            const targetMember = await message.guild.members.fetch(targetUser.id).catch(() => null) || message.member;
+            const userData = getOrCreateUser(message.guild.id, targetUser.id, targetMember.displayName || targetUser.username);
+            const embed = createPointsEmbed(targetMember, userData);
+            return message.reply({ embeds: [embed] }).catch(() => {});
         }
     }
 
@@ -1852,8 +2261,66 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: '❌ Leaderboard is server-specific! Please run this command inside a server.', ephemeral: true });
         }
 
-        const lbEmbed = createLeaderboardEmbed(interaction.guild, interaction.member);
+        const type = interaction.options.getString('type') || 'xp';
+        const lbEmbed = createLeaderboardEmbed(interaction.guild, interaction.member, type);
         return interaction.reply({ embeds: [lbEmbed] });
+    }
+
+    // --- /shop ---
+    if (commandName === 'shop') {
+        if (!interaction.guild) {
+            return interaction.reply({ content: '❌ Shop is server-specific! Please run this command inside a server.', ephemeral: true });
+        }
+
+        const userData = getOrCreateUser(interaction.guild.id, interaction.user.id, interaction.member?.displayName || interaction.user.username);
+        const shopEmbed = createShopEmbed(userData);
+        return interaction.reply({ embeds: [shopEmbed] });
+    }
+
+    // --- /buy ---
+    if (commandName === 'buy') {
+        if (!interaction.guild) {
+            return interaction.reply({ content: '❌ Shop is server-specific! Please run this command inside a server.', ephemeral: true });
+        }
+
+        const themeKey = interaction.options.getString('theme');
+        const res = handleBuyTheme(interaction.guild.id, interaction.user.id, interaction.member?.displayName || interaction.user.username, themeKey);
+        return interaction.reply({ content: res.message });
+    }
+
+    // --- /equip ---
+    if (commandName === 'equip') {
+        if (!interaction.guild) {
+            return interaction.reply({ content: '❌ Card themes are server-specific! Please run this command inside a server.', ephemeral: true });
+        }
+
+        const themeKey = interaction.options.getString('theme');
+        const res = handleEquipTheme(interaction.guild.id, interaction.user.id, interaction.member?.displayName || interaction.user.username, themeKey);
+        return interaction.reply({ content: res.message });
+    }
+
+    // --- /daily ---
+    if (commandName === 'daily') {
+        if (!interaction.guild) {
+            return interaction.reply({ content: '❌ Daily reward is server-specific! Please run this command inside a server.', ephemeral: true });
+        }
+
+        const res = handleDailyReward(interaction.guild.id, interaction.user.id, interaction.member?.displayName || interaction.user.username);
+        return interaction.reply({ content: res.message });
+    }
+
+    // --- /points ---
+    if (commandName === 'points') {
+        if (!interaction.guild) {
+            return interaction.reply({ content: '❌ Economy is server-specific! Please run this command inside a server.', ephemeral: true });
+        }
+
+        const targetUser = interaction.options.getUser('user') || interaction.user;
+        const targetMember = await interaction.guild.members.fetch(targetUser.id).catch(() => null) || interaction.member;
+        const userData = getOrCreateUser(interaction.guild.id, targetUser.id, targetMember.displayName || targetUser.username);
+
+        const embed = createPointsEmbed(targetMember, userData);
+        return interaction.reply({ embeds: [embed] });
     }
 
     // --- /play ---
@@ -2105,7 +2572,8 @@ client.on('interactionCreate', async (interaction) => {
             .setDescription('Ultra-lightweight, 24/7 high-fidelity music bot with interactive buttons and an AI brain.')
             .setColor(0x5865F2)
             .addFields(
-                { name: '🏆 Leveling & Rank (Arcade System)', value: '`/rank [user]` (or `!rank`) — Check your or another member\'s rank card (Level, XP, texts sent, minutes in call)\n`/leaderboard` (or `!top`) — View the server leveling leaderboard (Top 10 members)' },
+                { name: '🏆 Leveling & Rank (Arcade System)', value: '`/rank [user]` (or `!rank`) — Check rank card (Level, XP, texts sent, call time, points)\n`/leaderboard [type]` (or `!top`) — Server leaderboard (Top 10 by XP or Points)' },
+                { name: '🪙 Economy & Card Themes Shop', value: '`/shop` (or `!shop`) — Browse cool & natural rank card themes\n`/buy <theme>` (or `!buy <theme>`) — Purchase a card theme with points\n`/equip <theme>` (or `!equip <theme>`) — Equip an owned card theme\n`/daily` (or `!daily`) — Claim daily reward (+200 points every 24h)\n`/points [user]` (or `!points`) — View wallet, points, and owned themes' },
                 { name: '🧠 AI Chat & Web Search', value: '• **Mention `@null`** in any channel to chat!\n• **Reply to null\'s messages** to continue the conversation!\n• `/ask <question> [image]` — Ask AI (Groq for text, Gemini Vision for images/GIFs)\n• Remembers **50 messages** of history and knows server members & roles!' },
                 { name: '🎶 Music Playback', value: '`/play <song>` — Play songs or playlists (YouTube, Spotify, SoundCloud)\n`/pause` — Pause music\n`/resume` — Resume music\n`/skip` — Skip to next song\n`/stop` — Stop playback & disconnect' },
                 { name: '📜 Queue & Audio', value: '`/nowplaying` — Live song display with progress bar & buttons\n`/queue` — Show upcoming songs\n`/shuffle` — Shuffle the queue\n`/volume <1-100>` — Change playback volume' },
