@@ -913,7 +913,7 @@ function createProgressBar(currentMs, totalMs, length = 12) {
 }
 
 function createMusicControlButtons(isPaused = false) {
-    return new ActionRowBuilder().addComponents(
+    const row1 = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
             .setCustomId('music_pause_resume')
             .setLabel(isPaused ? 'Resume' : 'Pause')
@@ -928,7 +928,15 @@ function createMusicControlButtons(isPaused = false) {
             .setCustomId('music_stop')
             .setLabel('Stop')
             .setEmoji('⏹️')
-            .setStyle(ButtonStyle.Danger),
+            .setStyle(ButtonStyle.Danger)
+    );
+
+    const row2 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('music_lyrics')
+            .setLabel('Lyrics')
+            .setEmoji('📜')
+            .setStyle(ButtonStyle.Primary),
         new ButtonBuilder()
             .setCustomId('music_shuffle')
             .setLabel('Shuffle')
@@ -937,9 +945,11 @@ function createMusicControlButtons(isPaused = false) {
         new ButtonBuilder()
             .setCustomId('music_queue')
             .setLabel('Queue')
-            .setEmoji('📜')
+            .setEmoji('📑')
             .setStyle(ButtonStyle.Secondary)
     );
+
+    return [row1, row2];
 }
 
 // Riffy Lavalink Event Listeners
@@ -970,7 +980,7 @@ client.riffy.on('trackStart', async (player, track) => {
     try {
         await channel.send({
             embeds: [embed],
-            components: [createMusicControlButtons(false)]
+            components: createMusicControlButtons(false)
         });
     } catch {}
 });
@@ -4013,17 +4023,22 @@ client.on('interactionCreate', async (interaction) => {
             return handleBlackjackButtonInteraction(interaction);
         }
 
-        const player = client.riffy.players.get(interaction.guildId);
-        const memberVoice = interaction.member?.voice?.channel;
+        if (!interaction.customId.startsWith('music_')) return;
 
-        if (!memberVoice) {
-            return interaction.reply({ content: '❌ You must be in a voice channel to use the controls!', ephemeral: true });
-        }
-        if (player && player.voiceChannel && player.voiceChannel !== memberVoice.id) {
-            return interaction.reply({ content: '❌ You must be in the same voice channel as the bot!', ephemeral: true });
-        }
+        const player = client.riffy.players.get(interaction.guildId);
         if (!player || !player.current) {
             return interaction.reply({ content: '❌ No music is currently playing!', ephemeral: true });
+        }
+
+        const isPlaybackControl = ['music_pause_resume', 'music_skip', 'music_stop', 'music_shuffle'].includes(interaction.customId);
+        if (isPlaybackControl) {
+            const memberVoice = interaction.member?.voice?.channel;
+            if (!memberVoice) {
+                return interaction.reply({ content: '❌ You must be in a voice channel to use playback controls!', ephemeral: true });
+            }
+            if (player.voiceChannel && player.voiceChannel !== memberVoice.id) {
+                return interaction.reply({ content: '❌ You must be in the same voice channel as the bot!', ephemeral: true });
+            }
         }
 
         switch (interaction.customId) {
@@ -4057,6 +4072,40 @@ client.on('interactionCreate', async (interaction) => {
                 player.queue.shuffle();
                 await interaction.reply({ content: `🔀 Shuffled **${player.queue.size}** songs in the queue!`, ephemeral: true });
                 break;
+            }
+            case 'music_lyrics': {
+                await interaction.deferReply({ ephemeral: true });
+                const current = player.current;
+                if (!current || !current.info) {
+                    return interaction.editReply({ content: '❌ No music is currently playing!' });
+                }
+                try {
+                    const lyricsData = await fetchLyrics(current.info.title, current.info.author);
+                    if (!lyricsData || !lyricsData.plainLyrics) {
+                        return interaction.editReply({ content: `❌ Could not find lyrics for: **${current.info.title}**` });
+                    }
+
+                    let lyrics = lyricsData.plainLyrics.trim();
+                    if (lyrics.length > 3900) {
+                        lyrics = lyrics.slice(0, 3900) + '\n\n*(...lyrics truncated)*';
+                    }
+
+                    const embed = new EmbedBuilder()
+                        .setTitle(`📜 Lyrics: ${lyricsData.trackName || current.info.title}`)
+                        .setAuthor({ name: lyricsData.artistName || current.info.author || 'Unknown Artist' })
+                        .setDescription(lyrics)
+                        .setColor(0x2BB6A6)
+                        .setFooter({ text: 'Lyrics powered by LRCLIB' })
+                        .setTimestamp();
+
+                    if (current.info.thumbnail) {
+                        embed.setThumbnail(current.info.thumbnail);
+                    }
+
+                    return interaction.editReply({ embeds: [embed] });
+                } catch (err) {
+                    return interaction.editReply({ content: `⚠️ Failed to fetch lyrics: ${err.message}` });
+                }
             }
             case 'music_queue': {
                 const tracks = player.queue;
@@ -4552,7 +4601,7 @@ client.on('interactionCreate', async (interaction) => {
 
         return interaction.reply({
             embeds: [embed],
-            components: [createMusicControlButtons(player.paused)]
+            components: createMusicControlButtons(player.paused)
         });
     }
 
