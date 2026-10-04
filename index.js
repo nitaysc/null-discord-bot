@@ -22,6 +22,7 @@ const {
     ActionRowBuilder,
     ButtonBuilder,
     ButtonStyle,
+    StringSelectMenuBuilder,
     SlashCommandBuilder,
     AttachmentBuilder
 } = require('discord.js');
@@ -1364,8 +1365,8 @@ setInterval(() => {
     }
 }, 60000).unref();
 
-// Generates authentic Arcane-style graphical rank card image (PNG) using equipped theme
-async function generateRankCardImage(member, userData) {
+// Generates authentic Arcane-style graphical rank card image (PNG) using equipped theme (or preview theme)
+async function generateRankCardImage(member, userData, overrideThemeId = null) {
     if (!canvasModule) return null;
     try {
         const { createCanvas, loadImage } = canvasModule;
@@ -1374,7 +1375,7 @@ async function generateRankCardImage(member, userData) {
         const levelData = calculateLevelData(totalXp);
         const { rank, totalRanked } = getUserRank(member.guild.id, member.id);
 
-        const themeId = userData.equippedTheme || 'arcane';
+        const themeId = overrideThemeId || userData.equippedTheme || 'arcane';
         const theme = CARD_THEMES[themeId] || CARD_THEMES.arcane;
         const accentColor = theme.accent;
 
@@ -1605,8 +1606,97 @@ function createShopEmbed(userData) {
         { name: '💎 Classic Themes', value: categories['Classic'].join('\n\n'), inline: false }
     );
 
-    embed.setFooter({ text: 'Commands: /shop • /buy <theme> • /equip <theme> • /daily' });
+    embed.setFooter({ text: 'Commands: /shop • /preview <theme> • /buy <theme> • /equip <theme> • /daily' });
     return embed;
+}
+
+// Creates the dropdown select menu for previewing themes in /shop
+function createShopComponents() {
+    const options = Object.values(CARD_THEMES).map(t => ({
+        label: `${t.name} (${t.price === 0 ? 'Free' : `${t.price} pts`})`,
+        value: t.id,
+        description: `${t.category} • ${t.description.slice(0, 45)}...`,
+        emoji: t.emoji
+    }));
+
+    const selectMenu = new StringSelectMenuBuilder()
+        .setCustomId('shop_select_theme')
+        .setPlaceholder('🎨 Select a theme to preview live with your stats...')
+        .addOptions(options);
+
+    return [new ActionRowBuilder().addComponents(selectMenu)];
+}
+
+// Builds a full preview payload with live Canvas rank card image and Buy/Equip buttons
+async function buildThemePreviewPayload(member, userData, themeId) {
+    const validId = (themeId || '').toLowerCase().trim();
+    const theme = CARD_THEMES[validId] || CARD_THEMES.arcane;
+    const inventory = userData.inventory || ['arcane'];
+    const isOwned = inventory.includes(theme.id);
+    const isEquipped = (userData.equippedTheme || 'arcane') === theme.id;
+    const balance = userData.points || 0;
+    const canAfford = balance >= theme.price;
+
+    const cardBuffer = await generateRankCardImage(member, userData, theme.id);
+
+    let statusText = '';
+    if (isEquipped) statusText = '🟢 **Currently Equipped**';
+    else if (isOwned) statusText = '✅ **Owned** (Ready to Equip)';
+    else if (canAfford) statusText = `🛒 **Available for Purchase** (${theme.price} Points)`;
+    else statusText = `🔒 **Locked** (Need ${(theme.price - balance).toLocaleString()} more Points)`;
+
+    const embed = new EmbedBuilder()
+        .setTitle(`${theme.emoji} Theme Preview: ${theme.name}`)
+        .setDescription(`**Category:** ${theme.category}\n*${theme.description}*\n\n💰 **Price:** **${theme.price === 0 ? 'Free Default' : `${theme.price} 🪙 Points`}**\n👛 **Your Balance:** **${balance.toLocaleString()} 🪙 Points**\n📊 **Status:** ${statusText}`)
+        .setColor(0x2BB6A6)
+        .setFooter({ text: 'Card Theme Preview • Click the button below to buy or equip!' });
+
+    const buttonsRow = new ActionRowBuilder();
+
+    if (isEquipped) {
+        buttonsRow.addComponents(
+            new ButtonBuilder()
+                .setCustomId(`shop_equipped_${theme.id}`)
+                .setLabel('🟢 Currently Equipped')
+                .setStyle(ButtonStyle.Success)
+                .setDisabled(true)
+        );
+    } else if (isOwned) {
+        buttonsRow.addComponents(
+            new ButtonBuilder()
+                .setCustomId(`shop_equip_${theme.id}`)
+                .setLabel(`🎨 Equip ${theme.name}`)
+                .setStyle(ButtonStyle.Primary)
+        );
+    } else if (canAfford) {
+        buttonsRow.addComponents(
+            new ButtonBuilder()
+                .setCustomId(`shop_buy_${theme.id}`)
+                .setLabel(`🛒 Buy & Equip (${theme.price} Points)`)
+                .setStyle(ButtonStyle.Success)
+        );
+    } else {
+        buttonsRow.addComponents(
+            new ButtonBuilder()
+                .setCustomId(`shop_locked_${theme.id}`)
+                .setLabel(`🔒 Need ${theme.price - balance} more Points`)
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(true)
+        );
+    }
+
+    const payload = {
+        embeds: [embed],
+        components: [buttonsRow]
+    };
+
+    if (cardBuffer) {
+        const attachment = new AttachmentBuilder(cardBuffer, { name: `preview-${theme.id}.png` });
+        embed.setImage(`attachment://preview-${theme.id}.png`);
+        payload.files = [attachment];
+    }
+
+    return payload;
 }
 
 // Builds the Server Leaderboard Embed (XP or Points)
@@ -2142,6 +2232,23 @@ const slashCommands = [
         .setName('shop')
         .setDescription('Browse the rank card themes shop and view theme prices'),
     new SlashCommandBuilder()
+        .setName('preview')
+        .setDescription('Preview how your rank card will look with a specific theme before buying')
+        .addStringOption(option =>
+            option.setName('theme')
+                .setDescription('The theme you want to preview')
+                .setRequired(true)
+                .addChoices(
+                    { name: '⚡ Cyberpunk Neon (400 pts)', value: 'cyberpunk' },
+                    { name: '🌌 Cosmic Galaxy (500 pts)', value: 'galaxy' },
+                    { name: '🩸 Bloodmoon Crimson (450 pts)', value: 'crimson' },
+                    { name: '🌿 Forest Emerald (350 pts)', value: 'nature' },
+                    { name: '🌅 Golden Sunset (350 pts)', value: 'sunset' },
+                    { name: '🌊 Abyssal Ocean (400 pts)', value: 'ocean' },
+                    { name: '💎 Classic Arcane (Default)', value: 'arcane' }
+                )
+        ),
+    new SlashCommandBuilder()
         .setName('buy')
         .setDescription('Purchase a rank card theme with your points')
         .addStringOption(option =>
@@ -2335,7 +2442,18 @@ client.on('messageCreate', async (message) => {
         if (lower === '!shop') {
             const userData = getOrCreateUser(message.guild.id, message.author.id, message.member?.displayName || message.author.username);
             const shopEmbed = createShopEmbed(userData);
-            return message.reply({ embeds: [shopEmbed] }).catch(() => {});
+            const shopComponents = createShopComponents();
+            return message.reply({ embeds: [shopEmbed], components: shopComponents }).catch(() => {});
+        }
+
+        if (lower === '!preview' || lower.startsWith('!preview ')) {
+            const themeKey = lower.replace('!preview', '').trim();
+            if (!themeKey) {
+                return message.reply('💡 Usage: `!preview <theme>` (e.g. `!preview cyberpunk`, `!preview galaxy`, `!preview nature`). Or use `!shop` to preview via the dropdown menu!').catch(() => {});
+            }
+            const userData = getOrCreateUser(message.guild.id, message.author.id, message.member?.displayName || message.author.username);
+            const previewPayload = await buildThemePreviewPayload(message.member || message.author, userData, themeKey);
+            return message.reply(previewPayload).catch(() => {});
         }
 
         if (lower.startsWith('!buy ') || lower === '!buy') {
@@ -2529,8 +2647,47 @@ client.on('messageCreate', async (message) => {
 
 // Handle Slash Command & Button Interactions
 client.on('interactionCreate', async (interaction) => {
-    // 1. Button Controls
+    // 1. Select Menu Interactions (Shop Theme Previews)
+    if (interaction.isStringSelectMenu()) {
+        if (interaction.customId === 'shop_select_theme') {
+            if (!interaction.guild) {
+                return interaction.reply({ content: '❌ Previews are server-specific!', ephemeral: true });
+            }
+
+            await interaction.deferReply({ ephemeral: true });
+            const themeId = interaction.values[0];
+            const userData = getOrCreateUser(interaction.guild.id, interaction.user.id, interaction.member?.displayName || interaction.user.username);
+            const previewPayload = await buildThemePreviewPayload(interaction.member, userData, themeId);
+            return interaction.editReply(previewPayload);
+        }
+        return;
+    }
+
+    // 2. Button Controls
     if (interaction.isButton()) {
+        // Shop Quick Buy & Equip Buttons
+        if (interaction.customId.startsWith('shop_buy_')) {
+            if (!interaction.guild) {
+                return interaction.reply({ content: '❌ Shop is server-specific!', ephemeral: true });
+            }
+            const themeId = interaction.customId.replace('shop_buy_', '');
+            const res = handleBuyTheme(interaction.guild.id, interaction.user.id, interaction.member?.displayName || interaction.user.username, themeId);
+            const userData = getOrCreateUser(interaction.guild.id, interaction.user.id, interaction.member?.displayName || interaction.user.username);
+            const updatedPayload = await buildThemePreviewPayload(interaction.member, userData, themeId);
+            return interaction.reply({ content: res.message, ...updatedPayload, ephemeral: true });
+        }
+
+        if (interaction.customId.startsWith('shop_equip_')) {
+            if (!interaction.guild) {
+                return interaction.reply({ content: '❌ Card themes are server-specific!', ephemeral: true });
+            }
+            const themeId = interaction.customId.replace('shop_equip_', '');
+            const res = handleEquipTheme(interaction.guild.id, interaction.user.id, interaction.member?.displayName || interaction.user.username, themeId);
+            const userData = getOrCreateUser(interaction.guild.id, interaction.user.id, interaction.member?.displayName || interaction.user.username);
+            const updatedPayload = await buildThemePreviewPayload(interaction.member, userData, themeId);
+            return interaction.reply({ content: res.message, ...updatedPayload, ephemeral: true });
+        }
+
         const player = client.riffy.players.get(interaction.guildId);
         const memberVoice = interaction.member?.voice?.channel;
 
@@ -2676,7 +2833,23 @@ client.on('interactionCreate', async (interaction) => {
 
         const userData = getOrCreateUser(interaction.guild.id, interaction.user.id, interaction.member?.displayName || interaction.user.username);
         const shopEmbed = createShopEmbed(userData);
-        return interaction.reply({ embeds: [shopEmbed] });
+        const shopComponents = createShopComponents();
+        return interaction.reply({ embeds: [shopEmbed], components: shopComponents });
+    }
+
+    // --- /preview ---
+    if (commandName === 'preview') {
+        if (!interaction.guild) {
+            return interaction.reply({ content: '❌ Previews are server-specific! Please run this command inside a server.', ephemeral: true });
+        }
+
+        await interaction.deferReply();
+
+        const themeKey = interaction.options.getString('theme');
+        const userData = getOrCreateUser(interaction.guild.id, interaction.user.id, interaction.member?.displayName || interaction.user.username);
+        const previewPayload = await buildThemePreviewPayload(interaction.member, userData, themeKey);
+
+        return interaction.editReply(previewPayload);
     }
 
     // --- /buy ---
@@ -3004,7 +3177,7 @@ client.on('interactionCreate', async (interaction) => {
             .setColor(0x5865F2)
             .addFields(
                 { name: '🏆 Leveling & Rank (Arcade System)', value: '`/rank [user]` (or `!rank`) — Check rank card (Level, XP, texts sent, call time, points)\n`/leaderboard [type]` (or `!top`) — Server leaderboard (Top 10 by XP or Points)' },
-                { name: '🪙 Economy & Card Themes Shop', value: '`/shop` (or `!shop`) — Browse cool & natural rank card themes\n`/buy <theme>` (or `!buy <theme>`) — Purchase a card theme with points\n`/equip <theme>` (or `!equip <theme>`) — Equip an owned card theme\n`/daily` (or `!daily`) — Claim daily reward (+200 points every 24h)\n`/points [user]` (or `!points`) — View wallet, points, and owned themes' },
+                { name: '🪙 Economy & Card Themes Shop', value: '`/shop` (or `!shop`) — Browse shop & preview themes live with interactive dropdown!\n`/preview <theme>` (or `!preview <theme>`) — Generate a live preview card before buying\n`/buy <theme>` (or `!buy <theme>`) — Purchase a card theme with points\n`/equip <theme>` (or `!equip <theme>`) — Equip an owned card theme\n`/daily` (or `!daily`) — Claim daily reward (+200 points every 24h)\n`/points [user]` (or `!points`) — View wallet, points, and owned themes' },
                 { name: '🎮 Arcade Minigames', value: '`/hangman [category]` (or `!hangman`) — Interactive Hangman game with real words & ASCII art!\n• Type single letters in chat (e.g. `e`, `a`) or full words to guess!\n• Earn points & XP for finding letters and winning!\n`/hangman-stop` (or `!forfeit`) — Forfeit active game' },
                 { name: '🧠 AI Chat & Web Search', value: '• **Mention `@null`** in any channel to chat!\n• **Reply to null\'s messages** to continue the conversation!\n• `/ask <question> [image]` — Ask AI (Groq for text, Gemini Vision for images/GIFs)\n• Remembers **50 messages** of history and knows server members & roles!' },
                 { name: '🎶 Music Playback', value: '`/play <song>` — Play songs or playlists (YouTube, Spotify, SoundCloud)\n`/pause` — Pause music\n`/resume` — Resume music\n`/skip` — Skip to next song\n`/stop` — Stop playback & disconnect' },
