@@ -1032,6 +1032,352 @@ Core Personality & Vibe Guidelines:
 }
 
 // ==========================================
+// 🎨 MULTI-PROVIDER AI IMAGE GENERATION ENGINE
+// (Stability AI, AI Horde, ClipDrop, Hugging Face, Picsart)
+// ==========================================
+
+const recentImagePrompts = new Map();
+
+// Optimize and translate Hebrew / short prompts to vivid English prompts for Diffusion / FLUX
+async function optimizeImagePrompt(prompt) {
+    if (!/[\u0590-\u05FF]/.test(prompt)) {
+        return prompt.trim();
+    }
+    const groqKey = process.env.GROQ_API_KEY?.trim();
+    if (!groqKey) return prompt.trim();
+
+    try {
+        const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${groqKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: 'qwen/qwen3.8-27b',
+                messages: [
+                    {
+                        role: 'system',
+                        content: 'You are an expert AI image prompt engineer. Translate the user Hebrew request into a detailed, high-quality, vivid English prompt suitable for Stable Diffusion / FLUX. Return ONLY the English prompt text with no quotes, no explanations, no prefix.'
+                    },
+                    { role: 'user', content: prompt }
+                ],
+                max_tokens: 180,
+                temperature: 0.6
+            }),
+            signal: AbortSignal.timeout(6000)
+        });
+        if (res.ok) {
+            const data = await res.json();
+            const text = data.choices?.[0]?.message?.content?.trim();
+            if (text && text.length > 3) return text;
+        }
+    } catch (e) {
+        console.warn('[Image Engine] Prompt optimization notice:', e.message);
+    }
+    return prompt.trim();
+}
+
+// Intent detector: checks if user is asking null to draw or create an image in chat
+function extractImageGenerationPrompt(text) {
+    if (!text) return null;
+    const trimmed = text.trim();
+    const patterns = [
+        /^(?:can you\s+)?(?:please\s+)?(?:create|generate|make)\s+(?:me\s+)?(?:an?\s+)?image\s+(?:of\s+)?(.+)$/i,
+        /^(?:can you\s+)?(?:please\s+)?(?:draw|paint|imagine)\s+(?:me\s+)?(.+)$/i,
+        /^(?:imagine|generate|draw)\s*:\s*(.+)$/i,
+        /^(?:בבקשה\s+)?(?:תצייר|צייר|תייצר|תיצור|תכין|תעשה)\s+(?:לי\s+)?(?:תמונה|ציור)?\s*(?:של\s+)?(.+)$/i,
+        /^(?:תמונה|ציור)\s+של\s+(.+)$/i
+    ];
+    for (const pat of patterns) {
+        const match = trimmed.match(pat);
+        if (match && match[1]?.trim().length > 2) {
+            return match[1].trim();
+        }
+    }
+    return null;
+}
+
+// 1. Stability AI Engine (SD 3.5 / Core - High Fidelity 8K / Photorealism)
+async function callStabilityAI(apiKey, prompt, aspectRatio = '1:1') {
+    const form = new FormData();
+    form.append('prompt', prompt);
+    form.append('output_format', 'png');
+    form.append('aspect_ratio', aspectRatio);
+
+    const res = await fetch('https://api.stability.ai/v2beta/stable-image/generate/core', {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Accept': 'image/*'
+        },
+        body: form,
+        signal: AbortSignal.timeout(35000)
+    });
+
+    if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        throw new Error(`Stability AI error (${res.status}): ${errText}`);
+    }
+
+    const arrayBuffer = await res.arrayBuffer();
+    return Buffer.from(arrayBuffer);
+}
+
+// 2. ClipDrop Engine (SDXL Turbo)
+async function callClipDrop(apiKey, prompt) {
+    const form = new FormData();
+    form.append('prompt', prompt);
+
+    const res = await fetch('https://clipdrop-api.co/text-to-image/v1', {
+        method: 'POST',
+        headers: {
+            'x-api-key': apiKey
+        },
+        body: form,
+        signal: AbortSignal.timeout(35000)
+    });
+
+    if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        throw new Error(`ClipDrop error (${res.status}): ${errText}`);
+    }
+
+    const arrayBuffer = await res.arrayBuffer();
+    return Buffer.from(arrayBuffer);
+}
+
+// 3. Hugging Face Engine (FLUX.1-schnell & SDXL)
+async function callHuggingFace(apiKey, prompt) {
+    const url = 'https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell';
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ inputs: prompt }),
+        signal: AbortSignal.timeout(45000)
+    });
+
+    if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        throw new Error(`Hugging Face error (${res.status}): ${errText}`);
+    }
+
+    const arrayBuffer = await res.arrayBuffer();
+    return Buffer.from(arrayBuffer);
+}
+
+// 4. Picsart Engine
+async function callPicsart(apiKey, prompt) {
+    const form = new FormData();
+    form.append('prompt', prompt);
+    form.append('count', '1');
+
+    const res = await fetch('https://genai-api.picsart.io/v1/text2image', {
+        method: 'POST',
+        headers: {
+            'x-picsart-api-key': apiKey
+        },
+        body: form,
+        signal: AbortSignal.timeout(35000)
+    });
+
+    if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        throw new Error(`Picsart error (${res.status}): ${errText}`);
+    }
+
+    const data = await res.json();
+    const imgUrl = data.data?.[0]?.url;
+    if (!imgUrl) throw new Error('Picsart returned no image URL');
+
+    const imgRes = await fetch(imgUrl, { signal: AbortSignal.timeout(15000) });
+    const arrayBuffer = await imgRes.arrayBuffer();
+    return Buffer.from(arrayBuffer);
+}
+
+// 5. AI Horde Engine (100% Free Crowdsourced Distributed GPU Cluster)
+async function callAIHorde(apiKey, prompt, width = 512, height = 512) {
+    const postRes = await fetch('https://aihorde.net/api/v2/generate/async', {
+        method: 'POST',
+        headers: {
+            'apikey': apiKey || '0000000000',
+            'Client-Agent': 'null-discord-bot:1.0:null',
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            prompt: prompt,
+            models: ['Deliberate', "ICBINP - I Can't Believe It's Not Photography", 'stable_diffusion', 'AlbedoBase XL (SDXL)'],
+            params: {
+                steps: 20,
+                width: width,
+                height: height
+            },
+            nsfw: false,
+            censor_nsfw: true
+        }),
+        signal: AbortSignal.timeout(15000)
+    });
+
+    if (!postRes.ok) {
+        const errText = await postRes.text().catch(() => '');
+        throw new Error(`AI Horde error (${postRes.status}): ${errText}`);
+    }
+
+    const { id } = await postRes.json();
+    if (!id) throw new Error('AI Horde returned no job ID');
+
+    // Poll status for up to 50 seconds
+    const startTime = Date.now();
+    let isDone = false;
+    while (Date.now() - startTime < 50000) {
+        await new Promise(r => setTimeout(r, 3000));
+        const checkRes = await fetch(`https://aihorde.net/api/v2/generate/check/${id}`, {
+            headers: { 'Client-Agent': 'null-discord-bot:1.0:null' },
+            signal: AbortSignal.timeout(5000)
+        }).catch(() => null);
+
+        if (checkRes && checkRes.ok) {
+            const checkData = await checkRes.json().catch(() => ({}));
+            if (checkData.done) {
+                isDone = true;
+                break;
+            }
+            if (checkData.faulted) throw new Error('AI Horde generation worker faulted');
+        }
+    }
+
+    if (!isDone) {
+        throw new Error('AI Horde generation timed out (workers busy)');
+    }
+
+    const statusRes = await fetch(`https://aihorde.net/api/v2/generate/status/${id}`, {
+        headers: { 'Client-Agent': 'null-discord-bot:1.0:null' },
+        signal: AbortSignal.timeout(10000)
+    });
+    if (!statusRes.ok) throw new Error(`AI Horde status fetch error (${statusRes.status})`);
+
+    const statusData = await statusRes.json();
+    const gen = statusData.generations?.[0];
+    if (!gen || !gen.img) throw new Error('AI Horde returned empty image generation');
+
+    if (gen.img.startsWith('http')) {
+        const imgRes = await fetch(gen.img, { signal: AbortSignal.timeout(15000) });
+        return Buffer.from(await imgRes.arrayBuffer());
+    } else {
+        const base64Data = gen.img.replace(/^data:image\/\w+;base64,/, '');
+        return Buffer.from(base64Data, 'base64');
+    }
+}
+
+// Master Orchestrator: translates prompt & cascades through providers
+async function generateImageCombined(prompt, requestedProvider = 'auto', aspectRatio = '1:1') {
+    const enhancedPrompt = await optimizeImagePrompt(prompt);
+
+    const stabilityKey = process.env.STABILITY_API_KEY?.trim();
+    const clipdropKey = process.env.CLIPDROP_API_KEY?.trim();
+    const hfKey = (process.env.HUGGINGFACE_API_KEY || process.env.HF_TOKEN)?.trim();
+    const picsartKey = process.env.PICSART_API_KEY?.trim();
+    const hordeKey = process.env.AI_HORDE_API_KEY?.trim();
+
+    const providerList = [];
+    if (requestedProvider === 'stability' && stabilityKey) providerList.push('stability');
+    else if (requestedProvider === 'clipdrop' && clipdropKey) providerList.push('clipdrop');
+    else if (requestedProvider === 'huggingface' && hfKey) providerList.push('huggingface');
+    else if (requestedProvider === 'picsart' && picsartKey) providerList.push('picsart');
+    else if (requestedProvider === 'aihorde' && hordeKey) providerList.push('aihorde');
+    else {
+        // Auto Cascade Order: Stability -> Hugging Face -> ClipDrop -> AI Horde -> Picsart
+        if (stabilityKey) providerList.push('stability');
+        if (hfKey) providerList.push('huggingface');
+        if (clipdropKey) providerList.push('clipdrop');
+        if (hordeKey) providerList.push('aihorde');
+        if (picsartKey) providerList.push('picsart');
+        // If user didn't set keys, AI Horde works with free anonymous key
+        if (providerList.length === 0) providerList.push('aihorde');
+    }
+
+    let lastError = null;
+    for (const provider of providerList) {
+        try {
+            if (provider === 'stability') {
+                const buf = await callStabilityAI(stabilityKey, enhancedPrompt, aspectRatio);
+                return { buffer: buf, provider: 'Stability AI (SD 3.5 / Core)', enhancedPrompt, originalPrompt: prompt, requestedProvider };
+            }
+            if (provider === 'huggingface') {
+                const buf = await callHuggingFace(hfKey, enhancedPrompt);
+                return { buffer: buf, provider: 'Hugging Face (FLUX.1-schnell)', enhancedPrompt, originalPrompt: prompt, requestedProvider };
+            }
+            if (provider === 'clipdrop') {
+                const buf = await callClipDrop(clipdropKey, enhancedPrompt);
+                return { buffer: buf, provider: 'ClipDrop (SDXL Turbo)', enhancedPrompt, originalPrompt: prompt, requestedProvider };
+            }
+            if (provider === 'picsart') {
+                const buf = await callPicsart(picsartKey, enhancedPrompt);
+                return { buffer: buf, provider: 'Picsart GenAI', enhancedPrompt, originalPrompt: prompt, requestedProvider };
+            }
+            if (provider === 'aihorde') {
+                let w = 512, h = 512;
+                if (aspectRatio === '16:9') { w = 768; h = 432; }
+                else if (aspectRatio === '9:16') { w = 432; h = 768; }
+                const buf = await callAIHorde(hordeKey, enhancedPrompt, w, h);
+                return { buffer: buf, provider: 'AI Horde (Free GPU Cluster)', enhancedPrompt, originalPrompt: prompt, requestedProvider };
+            }
+        } catch (err) {
+            console.warn(`[Image Engine] Provider "${provider}" error: ${err.message}. Cascading to next provider...`);
+            lastError = err;
+        }
+    }
+
+    throw lastError || new Error('All configured image generation providers failed.');
+}
+
+// Payload generator for Discord reply
+function buildImageReplyPayload(genRes, user, durationSec, aspectRatio = '1:1') {
+    const attachment = new AttachmentBuilder(genRes.buffer, { name: 'null-imagine.png' });
+
+    const cacheKey = Math.random().toString(36).substring(2, 10);
+    recentImagePrompts.set(cacheKey, {
+        prompt: genRes.originalPrompt,
+        provider: genRes.requestedProvider || 'auto',
+        aspectRatio: aspectRatio,
+        userId: user.id
+    });
+    if (recentImagePrompts.size > 50) {
+        const oldestKey = recentImagePrompts.keys().next().value;
+        recentImagePrompts.delete(oldestKey);
+    }
+
+    const embed = new EmbedBuilder()
+        .setTitle('🎨 AI Image Generator • null')
+        .setDescription(
+            `**פרומפט מקורי:** ${genRes.originalPrompt}\n` +
+            (genRes.enhancedPrompt && genRes.enhancedPrompt !== genRes.originalPrompt
+                ? `**פרומפט משופר:** *${genRes.enhancedPrompt.slice(0, 280)}...*\n`
+                : '') +
+            `**מנוע:** \`${genRes.provider}\` • **יחס תצוגה:** \`${aspectRatio}\``
+        )
+        .setImage('attachment://null-imagine.png')
+        .setColor(0x5865F2)
+        .setFooter({
+            text: `נוצר עבור ${user.displayName || user.username} • זמן יצירה: ${durationSec}s`,
+            iconURL: typeof user.displayAvatarURL === 'function' ? user.displayAvatarURL() : undefined
+        })
+        .setTimestamp();
+
+    const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId(`regen_imagine_${cacheKey}`)
+            .setLabel('🔄 צייר שוב / Regenerate')
+            .setStyle(ButtonStyle.Primary)
+    );
+
+    return { embeds: [embed], files: [attachment], components: [row] };
+}
+
+// ==========================================
 // 🎵 MUSIC HELPERS & CONTROLS
 // ==========================================
 
@@ -3609,6 +3955,7 @@ function createHelpEmbed() {
             { name: '🎰 Casino & Gambling Minigames', value: '`/coinflip <amount> <heads/tails>` (or `!cf`) — 50/50 double-or-nothing coinflip!\n`/slots <amount>` (or `!slots`) — Spin slot reels for up to 25x Lucky 7 jackpot!\n`/blackjack <amount>` (or `!bj`) — Interactive blackjack table against dealer with buttons (Hit, Stand, Double)!' },
             { name: '🎮 Arcade Minigames', value: '`/hangman [category]` (or `!hangman`) — Interactive Hangman game with real words & ASCII art!\n• Type single letters in chat (e.g. `e`, `a`) or full words to guess!\n• Earn points & XP for finding letters and winning!\n`/hangman-stop` (or `!forfeit`) — Forfeit active game' },
             { name: '🧠 AI Chat & Web Search', value: '• **Mention `@null`** in any channel to chat!\n• **Reply to null\'s messages** to continue the conversation!\n• `/ask <question> [image]` — Ask AI (Groq for text, Gemini Vision for images/GIFs)\n• Remembers **50 messages** of history and knows server members & roles!' },
+            { name: '🎨 AI Image Generation', value: '`/imagine <prompt> [ratio] [provider]` (or `.imagine` / `.draw`) — Generate AI pictures!\n• **Mention `@null create an image of...`** or **`@null תצייר לי...`** in chat!\n• Supports **Stability AI (SD 3.5)**, **AI Horde (Free GPU)**, **ClipDrop**, **Hugging Face (FLUX.1)**, & **Picsart**!\n• Interactive `[🔄 Regenerate]` button on every image!' },
             { name: '🎶 Music & Lyrics', value: '`/play <song>` — Play songs or playlists (YouTube, Spotify, SoundCloud)\n`/lyrics [song]` (or `!lyrics`) — Live lyrics lookup for currently playing song or search\n`/pause` — Pause music\n`/resume` — Resume music\n`/skip` — Skip to next song\n`/stop` — Stop playback & disconnect' },
             { name: '📜 Queue & Audio', value: '`/nowplaying` — Live song display with progress bar & buttons\n`/queue` — Show upcoming songs\n`/shuffle` — Shuffle the queue\n`/volume <1-100>` — Change playback volume' },
             { name: '⚙️ Utilities', value: '`/null` — Bot status, memory diagnostics & AI brain info\n`/ping` — Check latency\n`/help` (or `!help`) — Display this guide' }
@@ -4264,7 +4611,69 @@ const slashCommands = [
         .setDescription('View bot status, RAM memory usage, AI brain, and Lavalink status'),
     new SlashCommandBuilder()
         .setName('help')
-        .setDescription('Show all commands and features')
+        .setDescription('Show all commands and features'),
+    new SlashCommandBuilder()
+        .setName('imagine')
+        .setDescription('Generate an AI image with Stability AI, AI Horde, ClipDrop, or Hugging Face')
+        .addStringOption(option =>
+            option.setName('prompt')
+                .setDescription('Describe what you want to draw / תאר מה תרצה לצייר')
+                .setRequired(true)
+        )
+        .addStringOption(option =>
+            option.setName('aspect_ratio')
+                .setDescription('Aspect ratio of the generated image')
+                .setRequired(false)
+                .addChoices(
+                    { name: '1:1 Square (מרובע)', value: '1:1' },
+                    { name: '16:9 Landscape (רחב)', value: '16:9' },
+                    { name: '9:16 Portrait / Story (לאורך)', value: '9:16' }
+                )
+        )
+        .addStringOption(option =>
+            option.setName('provider')
+                .setDescription('Select AI image generation provider')
+                .setRequired(false)
+                .addChoices(
+                    { name: 'Auto (Best Quality Available)', value: 'auto' },
+                    { name: 'Stability AI (SD 3.5 / Core)', value: 'stability' },
+                    { name: 'AI Horde (Free GPU Cluster)', value: 'aihorde' },
+                    { name: 'ClipDrop (SDXL Turbo)', value: 'clipdrop' },
+                    { name: 'Hugging Face (FLUX.1-schnell)', value: 'huggingface' },
+                    { name: 'Picsart GenAI', value: 'picsart' }
+                )
+        ),
+    new SlashCommandBuilder()
+        .setName('generateimage')
+        .setDescription('Generate an AI image (Alias for /imagine)')
+        .addStringOption(option =>
+            option.setName('prompt')
+                .setDescription('Describe what you want to draw / תאר מה תרצה לצייר')
+                .setRequired(true)
+        )
+        .addStringOption(option =>
+            option.setName('aspect_ratio')
+                .setDescription('Aspect ratio of the generated image')
+                .setRequired(false)
+                .addChoices(
+                    { name: '1:1 Square (מרובע)', value: '1:1' },
+                    { name: '16:9 Landscape (רחב)', value: '16:9' },
+                    { name: '9:16 Portrait / Story (לאורך)', value: '9:16' }
+                )
+        )
+        .addStringOption(option =>
+            option.setName('provider')
+                .setDescription('Select AI image generation provider')
+                .setRequired(false)
+                .addChoices(
+                    { name: 'Auto (Best Quality Available)', value: 'auto' },
+                    { name: 'Stability AI (SD 3.5 / Core)', value: 'stability' },
+                    { name: 'AI Horde (Free GPU Cluster)', value: 'aihorde' },
+                    { name: 'ClipDrop (SDXL Turbo)', value: 'clipdrop' },
+                    { name: 'Hugging Face (FLUX.1-schnell)', value: 'huggingface' },
+                    { name: 'Picsart GenAI', value: 'picsart' }
+                )
+        )
 ];
 
 // Bot Ready Event
@@ -4592,6 +5001,33 @@ client.on('messageCreate', async (message) => {
             }
         }
 
+        // Image Generation prefix commands: !imagine, .imagine, !draw, .draw, !generateimage
+        if (lower.startsWith('!imagine ') || lower.startsWith('!draw ') || lower.startsWith('!generateimage ') || lower === '!imagine' || lower === '!draw') {
+            const prompt = normalized.replace(/^!(imagine|draw|generateimage)\s*/i, '').trim();
+            if (!prompt) {
+                return message.reply({ content: '🎨 **שימוש בפקודה:**\n`.imagine <תיאור התמונה>` או `.draw <prompt>`\nלדוגמה: `.imagine a futuristic cyberpunk neon city at night`' }).catch(() => {});
+            }
+            try {
+                await message.channel.sendTyping().catch(() => {});
+                const progressMsg = await message.reply({
+                    content: `🎨 **יוצר עבורך תמונה עכשיו...** מפעיל את מנועי ה-AI עבור: "*${prompt.slice(0, 100)}*" ✨`
+                }).catch(() => null);
+
+                const startTime = Date.now();
+                const genRes = await generateImageCombined(prompt);
+                const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+                const replyPayload = buildImageReplyPayload(genRes, message.author, duration);
+
+                if (progressMsg) await progressMsg.delete().catch(() => {});
+                return message.reply(replyPayload).catch(() => {});
+            } catch (err) {
+                console.error('Prefix image generation error:', err);
+                return message.reply({
+                    content: `⚠️ שגיאה ביצירת התמונה: \`${err.message}\``
+                }).catch(() => {});
+            }
+        }
+
         // Lyrics command: !lyrics [song] (or .lyrics)
         if (lower === '!lyrics' || lower.startsWith('!lyrics ')) {
             const query = lower === '!lyrics' ? null : normalized.slice(8).trim();
@@ -4715,6 +5151,32 @@ client.on('messageCreate', async (message) => {
     const botMentionRegex = new RegExp(`<@!?${client.user.id}>`, 'g');
     let cleanPrompt = message.content.replace(botMentionRegex, '').trim();
 
+    // Check if user is asking null to generate or draw an image
+    const imgPrompt = extractImageGenerationPrompt(cleanPrompt);
+    if (imgPrompt) {
+        try {
+            await message.channel.sendTyping().catch(() => {});
+            const progressMsg = await message.reply({
+                content: `🎨 **יוצר עבורך תמונה עכשיו...** מפעיל את מנועי ה-AI עבור: "*${imgPrompt.slice(0, 100)}*" ✨`,
+                allowedMentions: { repliedUser: false }
+            }).catch(() => null);
+
+            const startTime = Date.now();
+            const genRes = await generateImageCombined(imgPrompt);
+            const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+            const replyPayload = buildImageReplyPayload(genRes, message.author, duration);
+
+            if (progressMsg) await progressMsg.delete().catch(() => {});
+            return await message.reply({ ...replyPayload, allowedMentions: { repliedUser: false } });
+        } catch (err) {
+            console.error('Mention image generation error:', err);
+            return await message.reply({
+                content: `⚠️ לא הצלחתי ליצור את התמונה: \`${err.message}\``,
+                allowedMentions: { repliedUser: false }
+            }).catch(() => {});
+        }
+    }
+
     // Default prompt when user sends an image/GIF with no text
     if (!cleanPrompt) {
         if (allImages.length > 0) {
@@ -4803,6 +5265,25 @@ client.on('interactionCreate', async (interaction) => {
 
     // 2. Button Controls
     if (interaction.isButton()) {
+        // Image Generation Regenerate Button
+        if (interaction.customId.startsWith('regen_imagine_')) {
+            const cacheKey = interaction.customId.replace('regen_imagine_', '');
+            const cached = recentImagePrompts.get(cacheKey);
+            if (!cached) {
+                return interaction.reply({ content: '⏳ פג תוקף הבקשה ליצירה מחדש של תמונה זו. השתמש ב-`/imagine` ליצירת תמונה חדשה!', ephemeral: true });
+            }
+            await interaction.deferReply();
+            try {
+                const startTime = Date.now();
+                const genRes = await generateImageCombined(cached.prompt, cached.provider, cached.aspectRatio);
+                const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+                const replyPayload = buildImageReplyPayload(genRes, interaction.user, duration, cached.aspectRatio);
+                return interaction.editReply(replyPayload);
+            } catch (err) {
+                return interaction.editReply({ content: `⚠️ שגיאה ביצירת התמונה מחדש: \`${err.message}\`` });
+            }
+        }
+
         // Shop Category Tabs Navigation
         if (interaction.customId.startsWith('shop_tab_')) {
             const category = interaction.customId.replace('shop_tab_', '');
@@ -5547,6 +6028,29 @@ client.on('interactionCreate', async (interaction) => {
     if (commandName === 'help') {
         const embed = createHelpEmbed();
         return interaction.reply({ embeds: [embed] });
+    }
+
+    // --- /imagine & /generateimage ---
+    if (commandName === 'imagine' || commandName === 'generateimage') {
+        const prompt = interaction.options.getString('prompt', true);
+        const aspectRatio = interaction.options.getString('aspect_ratio') || '1:1';
+        const provider = interaction.options.getString('provider') || 'auto';
+
+        await interaction.deferReply();
+
+        try {
+            const startTime = Date.now();
+            const genRes = await generateImageCombined(prompt, provider, aspectRatio);
+            const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+            const replyPayload = buildImageReplyPayload(genRes, interaction.user, duration, aspectRatio);
+
+            return await interaction.editReply(replyPayload);
+        } catch (err) {
+            console.error('Slash image generation error:', err);
+            return await interaction.editReply({
+                content: `⚠️ **שגיאה ביצירת התמונה:** \`${err.message}\`\n\n💡 *טיפ:* בדוק שהמפתחות שלך ב-\`.env\` פעילים (כגון \`STABILITY_API_KEY\` או \`AI_HORDE_API_KEY\`), או נסה שוב!`
+            });
+        }
     }
 });
 
