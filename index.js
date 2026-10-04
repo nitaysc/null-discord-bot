@@ -56,7 +56,7 @@ const client = new Client({
         BaseGuildEmojiManager: 0,
         GuildBanManager: 0,
         GuildInviteManager: 0,
-        GuildMemberManager: 25,
+        GuildMemberManager: 200,
         GuildStickerManager: 0,
         GuildScheduledEventManager: 0,
         MessageManager: 0,
@@ -66,8 +66,8 @@ const client = new Client({
         StageInstanceManager: 0,
         ThreadManager: 0,
         ThreadMemberManager: 0,
-        UserManager: 15,
-        VoiceStateManager: 25
+        UserManager: 100,
+        VoiceStateManager: 200
     }),
     sweepers: {
         messages: {
@@ -80,7 +80,7 @@ const client = new Client({
         },
         guildMembers: {
             interval: 120,
-            filter: () => member => member.id !== client.user?.id
+            filter: () => member => member.id !== client.user?.id && !member.voice?.channelId
         }
     }
 });
@@ -1015,8 +1015,89 @@ setInterval(() => {
     }
 }, 45000);
 
-// Auto disconnect when voice channel is empty
+// ==========================================
+// 🎙️ REAL-TIME VOICE SESSION TRACKER
+// ==========================================
+const activeVoiceSessions = new Map(); // key: `${guildId}_${userId}` -> { guildId, userId, channelId, lastTick }
+
+// Helper to get effective live voice minutes including active session time
+function getEffectiveVoiceMinutes(guildId, userId, baseMinutes = 0) {
+    const session = activeVoiceSessions.get(`${guildId}_${userId}`);
+    if (!session) return baseMinutes;
+    const extraMinutes = Math.floor((Date.now() - session.lastTick) / 60000);
+    return baseMinutes + Math.max(0, extraMinutes);
+}
+
+// Voice State Update: Handles both real-time voice time tracking and music player auto-disconnect
 client.on('voiceStateUpdate', (oldState, newState) => {
+    // 1. Real-time Voice Session Tracking (Call time, XP & Points)
+    try {
+        const guild = newState.guild || oldState.guild;
+        const userId = newState.id || oldState.id;
+
+        if (guild && userId && userId !== client.user?.id) {
+            const sessionKey = `${guild.id}_${userId}`;
+            const oldChannelId = oldState.channelId;
+            const newChannelId = newState.channelId;
+            const afkChannelId = guild.afkChannelId;
+
+            const isOldActive = oldChannelId && oldChannelId !== afkChannelId;
+            const isNewActive = newChannelId && newChannelId !== afkChannelId;
+
+            const member = newState.member || oldState.member || guild.members.cache.get(userId);
+            const isBot = member?.user?.bot ?? client.users.cache.get(userId)?.bot ?? false;
+
+            if (!isBot) {
+                if (!isOldActive && isNewActive) {
+                    // Member joined an active voice channel
+                    activeVoiceSessions.set(sessionKey, {
+                        guildId: guild.id,
+                        userId: userId,
+                        channelId: newChannelId,
+                        lastTick: Date.now()
+                    });
+                } else if (isOldActive && !isNewActive) {
+                    // Member disconnected or moved to AFK channel
+                    const session = activeVoiceSessions.get(sessionKey);
+                    if (session) {
+                        const elapsedMs = Date.now() - session.lastTick;
+                        // If in voice for at least 30 seconds since last tick, credit 1 full minute
+                        if (elapsedMs >= 30000) {
+                            const username = member?.displayName || member?.user?.username || client.users.cache.get(userId)?.username || 'Member';
+                            const user = getOrCreateUser(guild.id, userId, username);
+                            user.voiceMinutes = (user.voiceMinutes || 0) + 1;
+
+                            const isBooster = (user.boosterUntil || 0) > Date.now();
+                            const mult = isBooster ? 2 : 1;
+                            const xpGain = (Math.floor(Math.random() * 6) + 10) * mult;
+                            const pointsGain = (Math.floor(Math.random() * 4) + 5) * mult;
+                            user.xp = (user.xp || 0) + xpGain;
+                            user.points = (user.points || 0) + pointsGain;
+                            saveLevels();
+                        }
+                        activeVoiceSessions.delete(sessionKey);
+                    }
+                } else if (isOldActive && isNewActive && oldChannelId !== newChannelId) {
+                    // Member switched between active voice channels
+                    const session = activeVoiceSessions.get(sessionKey);
+                    if (session) {
+                        session.channelId = newChannelId;
+                    } else {
+                        activeVoiceSessions.set(sessionKey, {
+                            guildId: guild.id,
+                            userId: userId,
+                            channelId: newChannelId,
+                            lastTick: Date.now()
+                        });
+                    }
+                }
+            }
+        }
+    } catch (e) {
+        console.warn('[Voice Session Update Notice]:', e.message);
+    }
+
+    // 2. Auto disconnect Riffy music player when voice channel is empty
     const player = client.riffy.players.get(oldState.guild.id);
     if (!player) return;
 
@@ -1477,7 +1558,7 @@ function formatVoiceDuration(minutes) {
     if (h > 0) {
         return `${h}h ${m}m (${minutes.toLocaleString()} mins)`;
     }
-    return `${m} mins`;
+    return `${m} ${m === 1 ? 'min' : 'mins'}`;
 }
 
 function formatK(num) {
@@ -1543,46 +1624,84 @@ setInterval(() => {
         if (!client.guilds || client.guilds.cache.size === 0) return;
 
         let anyChanged = false;
+        const now = Date.now();
+
         for (const [guildId, guild] of client.guilds.cache) {
-            for (const [channelId, channel] of guild.channels.cache) {
-                if (channel.isVoiceBased() && channel.id !== guild.afkChannelId) {
-                    const members = channel.members;
-                    if (!members || members.size === 0) continue;
+            const afkId = guild.afkChannelId;
 
-                    for (const [memberId, member] of members) {
-                        if (member.user.bot) continue;
+            // Direct scan of guild.voiceStates.cache ensures no members are missed due to caching limits
+            for (const [userId, vs] of guild.voiceStates.cache) {
+                if (userId === client.user?.id) continue;
+                if (!vs.channelId || vs.channelId === afkId) {
+                    activeVoiceSessions.delete(`${guildId}_${userId}`);
+                    continue;
+                }
 
-                        const isDeaf = member.voice?.deaf || member.voice?.selfDeaf;
-                        if (isDeaf) continue;
+                const member = vs.member || guild.members.cache.get(userId);
+                const isBot = member?.user?.bot ?? client.users.cache.get(userId)?.bot ?? false;
+                if (isBot) continue;
 
-                        const user = getOrCreateUser(guild.id, member.id, member.displayName || member.user.username);
-                        user.voiceMinutes = (user.voiceMinutes || 0) + 1;
+                const sessionKey = `${guildId}_${userId}`;
+                let session = activeVoiceSessions.get(sessionKey);
+                if (!session) {
+                    session = {
+                        guildId,
+                        userId,
+                        channelId: vs.channelId,
+                        lastTick: now
+                    };
+                    activeVoiceSessions.set(sessionKey, session);
+                }
 
-                        const isBooster = (user.boosterUntil || 0) > Date.now();
-                        const mult = isBooster ? 2 : 1;
-                        const xpGain = (Math.floor(Math.random() * 6) + 10) * mult; // 10 - 15 XP per minute (x2 if booster)
-                        const pointsGain = (Math.floor(Math.random() * 4) + 5) * mult; // 5 - 8 Points per minute (x2 if booster)
-                        const oldLevel = calculateLevelData(user.xp).level;
+                const elapsed = now - session.lastTick;
+                if (elapsed >= 50000) { // At least 50 seconds since last credit
+                    const minutesToAdd = Math.max(1, Math.floor(elapsed / 60000));
+                    const username = member?.displayName || member?.user?.username || client.users.cache.get(userId)?.username || 'Member';
+                    const user = getOrCreateUser(guildId, userId, username);
 
-                        user.xp = (user.xp || 0) + xpGain;
-                        user.points = (user.points || 0) + pointsGain;
-                        anyChanged = true;
+                    user.voiceMinutes = (user.voiceMinutes || 0) + minutesToAdd;
 
-                        const newLevel = calculateLevelData(user.xp).level;
-                        if (newLevel > oldLevel) {
-                            const bonusPoints = newLevel * 50;
-                            user.points = (user.points || 0) + bonusPoints;
+                    const isBooster = (user.boosterUntil || 0) > now;
+                    const mult = isBooster ? 2 : 1;
+                    const xpGain = (Math.floor(Math.random() * 6) + 10) * mult * minutesToAdd; // 10 - 15 XP per minute (x2 if booster)
+                    const pointsGain = (Math.floor(Math.random() * 4) + 5) * mult * minutesToAdd; // 5 - 8 Points per minute (x2 if booster)
+                    const oldLevel = calculateLevelData(user.xp).level;
 
-                            if (channel.send) {
-                                channel.send({
-                                    content: `🎉 **Level Up!** <@${member.id}>, your time in call elevated you to **Level ${newLevel}** (+${bonusPoints} Points)! ⭐🪙`
-                                }).catch(() => {});
-                            }
+                    user.xp = (user.xp || 0) + xpGain;
+                    user.points = (user.points || 0) + pointsGain;
+                    session.lastTick += minutesToAdd * 60000;
+                    session.channelId = vs.channelId;
+                    anyChanged = true;
+
+                    const newLevel = calculateLevelData(user.xp).level;
+                    if (newLevel > oldLevel) {
+                        const bonusPoints = newLevel * 50;
+                        user.points = (user.points || 0) + bonusPoints;
+
+                        const channel = guild.channels.cache.get(vs.channelId);
+                        if (channel && channel.send) {
+                            channel.send({
+                                content: `🎉 **Level Up!** <@${userId}>, your time in call elevated you to **Level ${newLevel}** (+${bonusPoints} Points)! ⭐🪙`
+                            }).catch(() => {});
                         }
                     }
                 }
             }
         }
+
+        // Cleanup stale sessions for members no longer connected to voice
+        for (const [sessionKey, session] of activeVoiceSessions) {
+            const guild = client.guilds.cache.get(session.guildId);
+            if (!guild) {
+                activeVoiceSessions.delete(sessionKey);
+                continue;
+            }
+            const vs = guild.voiceStates.cache.get(session.userId);
+            if (!vs || !vs.channelId || vs.channelId === guild.afkChannelId) {
+                activeVoiceSessions.delete(sessionKey);
+            }
+        }
+
         if (anyChanged) saveLevels();
     } catch (e) {
         console.warn('[Leveling Voice Tick Notice]:', e.message);
@@ -1834,9 +1953,10 @@ function drawRankCardContent(ctx, width, height, member, userData, levelData, ra
         ctx.fillText(`Level: ${levelData.level}   XP: ${formatK(levelData.currentXp)} / ${formatK(levelData.neededXp)}${rankText}`, 160, 116);
 
         // Stats Row 2: Texts sent, Minutes in call, Points, Streak
+        const liveVoiceMins = getEffectiveVoiceMinutes(member.guild.id, member.id, userData.voiceMinutes || 0);
         ctx.fillStyle = theme.textSecondary;
         ctx.font = '500 15px "Segoe UI", Arial, sans-serif';
-        ctx.fillText(`Texts: ${(userData.messages || 0).toLocaleString()}   •   In Call: ${formatVoiceDuration(userData.voiceMinutes || 0)}   •   Points: ${(userData.points || 0).toLocaleString()} 🪙${streakStr}`, 160, 144);
+        ctx.fillText(`Texts: ${(userData.messages || 0).toLocaleString()}   •   In Call: ${formatVoiceDuration(liveVoiceMins)}   •   Points: ${(userData.points || 0).toLocaleString()} 🪙${streakStr}`, 160, 144);
     } else {
         // Default layout without bio
         ctx.fillStyle = theme.textPrimary;
@@ -1860,9 +1980,10 @@ function drawRankCardContent(ctx, width, height, member, userData, levelData, ra
         ctx.fillText(`Level: ${levelData.level}   XP: ${formatK(levelData.currentXp)} / ${formatK(levelData.neededXp)}${rankText}`, 160, 112);
 
         // Stats Row 2: Texts sent, Minutes in call, Points, Streak
+        const liveVoiceMins = getEffectiveVoiceMinutes(member.guild.id, member.id, userData.voiceMinutes || 0);
         ctx.fillStyle = theme.textSecondary;
         ctx.font = '500 16px "Segoe UI", Arial, sans-serif';
-        ctx.fillText(`Texts: ${(userData.messages || 0).toLocaleString()}   •   In Call: ${formatVoiceDuration(userData.voiceMinutes || 0)}   •   Points: ${(userData.points || 0).toLocaleString()} 🪙${streakStr}`, 160, 142);
+        ctx.fillText(`Texts: ${(userData.messages || 0).toLocaleString()}   •   In Call: ${formatVoiceDuration(liveVoiceMins)}   •   Points: ${(userData.points || 0).toLocaleString()} 🪙${streakStr}`, 160, 142);
     }
 
     // 7. Progress Bar (Pill Capsule with themed background and fill)
@@ -2011,7 +2132,7 @@ function createRankCardEmbed(member, userData) {
             inline: false
         },
         { name: '💬 Texts Sent', value: `**${(userData.messages || 0).toLocaleString()}** messages`, inline: true },
-        { name: '🎙️ Minutes in Call', value: `**${formatVoiceDuration(userData.voiceMinutes || 0)}**`, inline: true },
+        { name: '🎙️ Minutes in Call', value: `**${formatVoiceDuration(getEffectiveVoiceMinutes(member.guild.id, member.id, userData.voiceMinutes || 0))}**`, inline: true },
         { name: '🪙 Points Balance', value: `**${(userData.points || 0).toLocaleString()}** Points`, inline: true },
         { name: '🔥 Daily Streak', value: `**${userData.dailyStreak || 0}** Days`, inline: true },
         { name: '🎖️ Badges Unlocked', value: (() => {
@@ -2304,7 +2425,8 @@ function createLeaderboardEmbed(guild, requestingMember, type = 'xp') {
         if (isPoints) {
             return `${medal} **${name}** [${theme.emoji} ${theme.name}] • **${(u.points || 0).toLocaleString()} 🪙 Points** (Level ${levelData.level})`;
         } else {
-            return `${medal} **${name}** [${theme.emoji}] • **Level ${levelData.level}** (${(u.xp || 0).toLocaleString()} XP) • ${(u.points || 0).toLocaleString()} 🪙\n   ↳ 💬 ${(u.messages || 0).toLocaleString()} texts • 🎙️ ${formatVoiceDuration(u.voiceMinutes || 0)}`;
+            const liveVoiceMins = getEffectiveVoiceMinutes(guild.id, u.userId, u.voiceMinutes || 0);
+            return `${medal} **${name}** [${theme.emoji}] • **Level ${levelData.level}** (${(u.xp || 0).toLocaleString()} XP) • ${(u.points || 0).toLocaleString()} 🪙\n   ↳ 💬 ${(u.messages || 0).toLocaleString()} texts • 🎙️ ${formatVoiceDuration(liveVoiceMins)}`;
         }
     });
 
@@ -2715,7 +2837,7 @@ function createPointsEmbed(member, userData) {
             { name: '⭐ Level & Rank', value: `Level **${levelData.level}** (${(userData.xp || 0).toLocaleString()} XP)`, inline: true },
             { name: '🎖️ Badges Unlocked', value: `${badges.length} Badges (\`/badges\`)`, inline: true },
             { name: '💬 Texts Sent', value: `**${(userData.messages || 0).toLocaleString()}**`, inline: true },
-            { name: '🎙️ Call Time', value: `**${formatVoiceDuration(userData.voiceMinutes || 0)}**`, inline: true }
+            { name: '🎙️ Call Time', value: `**${formatVoiceDuration(getEffectiveVoiceMinutes(member.guild.id, member.id, userData.voiceMinutes || 0))}**`, inline: true }
         );
 
     if (userData.customRoleId) {
@@ -4060,6 +4182,32 @@ const onReady = async () => {
     } catch (error) {
         console.error('⚠️ Failed to register global slash commands:', error.message);
     }
+
+    // Synchronize active voice sessions across all guilds on startup
+    try {
+        const now = Date.now();
+        let syncedCount = 0;
+        for (const guild of client.guilds.cache.values()) {
+            const afkId = guild.afkChannelId;
+            for (const [userId, vs] of guild.voiceStates.cache) {
+                if (vs.channelId && vs.channelId !== afkId) {
+                    const isBot = vs.member?.user?.bot ?? client.users.cache.get(userId)?.bot ?? false;
+                    if (!isBot) {
+                        activeVoiceSessions.set(`${guild.id}_${userId}`, {
+                            guildId: guild.id,
+                            userId: userId,
+                            channelId: vs.channelId,
+                            lastTick: now
+                        });
+                        syncedCount++;
+                    }
+                }
+            }
+        }
+        console.log(`🎙️ Voice tracking synchronized (${syncedCount} active voice members detected).`);
+    } catch (err) {
+        console.warn('⚠️ Voice sync on ready notice:', err.message);
+    }
 };
 
 client.once('clientReady', onReady);
@@ -4074,8 +4222,13 @@ client.on('messageCreate', async (message) => {
     if (message.guild) {
         trackMessageForLeveling(message);
 
-        // Fast text commands fallback: !rank / !level / !leaderboard / !top
-        const lower = message.content.trim().toLowerCase();
+        // Fast text commands fallback: support both '!' and '.' prefixes (.rank, !rank, .top, !top, etc.)
+        const rawContent = message.content.trim();
+        if (!rawContent) return;
+
+        const normalized = rawContent.startsWith('.') ? '!' + rawContent.slice(1) : rawContent;
+        const lower = normalized.toLowerCase();
+
         if (lower === '!rank' || lower === '!level' || lower.startsWith('!rank ') || lower.startsWith('!level ')) {
             const targetUser = message.mentions.users.first() || message.author;
             const targetMember = await message.guild.members.fetch(targetUser.id).catch(() => null) || message.member;
@@ -4114,7 +4267,7 @@ client.on('messageCreate', async (message) => {
         }
 
         if (lower.startsWith('!customrole ') || lower.startsWith('!custom-role ')) {
-            const rest = message.content.trim().replace(/^!(customrole|custom-role)\s+/i, '');
+            const rest = normalized.replace(/^!(customrole|custom-role)\s+/i, '');
             const parts = rest.split(/\s+/);
             const lastPart = parts[parts.length - 1];
             let hexColor = '#ffffff';
@@ -4301,9 +4454,9 @@ client.on('messageCreate', async (message) => {
             }
         }
 
-        // Lyrics command: !lyrics [song]
+        // Lyrics command: !lyrics [song] (or .lyrics)
         if (lower === '!lyrics' || lower.startsWith('!lyrics ')) {
-            const query = lower === '!lyrics' ? null : message.content.slice(8).trim();
+            const query = lower === '!lyrics' ? null : normalized.slice(8).trim();
             return handleLyricsCommand(message, query, false);
         }
 
