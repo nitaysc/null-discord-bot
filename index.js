@@ -980,13 +980,12 @@ client.riffy.on('queueEnd', async (player) => {
     if (channel) {
         const embed = new EmbedBuilder()
             .setTitle('✅ Queue Finished')
-            .setDescription('All songs finished playing. Leaving voice channel.')
+            .setDescription('All songs finished playing. Staying in voice channel — use `/play` to play more music!')
             .setColor(0x2B2D31);
         try {
             await channel.send({ embeds: [embed] });
         } catch {}
     }
-    player.destroy();
     if (gc) { try { gc(); } catch {} }
 });
 
@@ -4371,8 +4370,15 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         const existingPlayer = client.riffy.players.get(interaction.guildId);
-        if (existingPlayer && existingPlayer.voiceChannel && existingPlayer.voiceChannel !== voiceChannel.id) {
+        const botVoiceChannel = interaction.guild.members.me?.voice?.channel;
+
+        if (existingPlayer && botVoiceChannel && botVoiceChannel.id !== voiceChannel.id) {
             return interaction.reply({ content: '❌ I am already playing music in another voice channel!', ephemeral: true });
+        }
+
+        // If player existed in memory but bot is no longer in any voice channel (disconnected/interrupted), clean it up
+        if (existingPlayer && !botVoiceChannel) {
+            try { existingPlayer.destroy(); } catch {}
         }
 
         await interaction.deferReply();
@@ -4385,6 +4391,8 @@ client.on('interactionCreate', async (interaction) => {
                 deaf: true
             });
 
+            player.textChannel = interaction.channelId;
+
             const resolve = await client.riffy.resolve({
                 query: query,
                 requester: interaction.user
@@ -4393,6 +4401,8 @@ client.on('interactionCreate', async (interaction) => {
             if (!resolve || !resolve.tracks || !resolve.tracks.length) {
                 return interaction.editReply({ content: `❌ No results found for: \`${query}\`` });
             }
+
+            const isActivelyPlaying = Boolean(player.current && player.playing && !player.paused);
 
             if (resolve.loadType === 'playlist') {
                 for (const track of resolve.tracks) {
@@ -4407,7 +4417,8 @@ client.on('interactionCreate', async (interaction) => {
 
                 await interaction.editReply({ embeds: [embed] });
 
-                if (!player.playing && !player.paused) {
+                if (!isActivelyPlaying) {
+                    if (player.paused) player.pause(false);
                     player.play();
                 }
             } else {
@@ -4415,7 +4426,7 @@ client.on('interactionCreate', async (interaction) => {
                 track.info.requester = interaction.user;
                 player.queue.add(track);
 
-                if (player.playing) {
+                if (isActivelyPlaying) {
                     const embed = new EmbedBuilder()
                         .setTitle('➕ Added to Queue')
                         .setDescription(`**[${track.info.title}](${track.info.uri})**\nBy: **${track.info.author}**`)
@@ -4428,7 +4439,7 @@ client.on('interactionCreate', async (interaction) => {
                     await interaction.editReply({ embeds: [embed] });
                 } else {
                     const embed = new EmbedBuilder()
-                        .setTitle('🎶 Enqueued')
+                        .setTitle('🎶 Now Playing')
                         .setDescription(`**[${track.info.title}](${track.info.uri})**\nBy: **${track.info.author}**`)
                         .setThumbnail(track.info.thumbnail || null)
                         .setColor(0x5865F2)
@@ -4437,9 +4448,9 @@ client.on('interactionCreate', async (interaction) => {
                             { name: 'Channel', value: `${voiceChannel.name}`, inline: true }
                         );
                     await interaction.editReply({ embeds: [embed] });
-                }
 
-                if (!player.playing && !player.paused) {
+                    // Ensure unpaused and trigger play immediately
+                    if (player.paused) player.pause(false);
                     player.play();
                 }
             }
@@ -4495,15 +4506,23 @@ client.on('interactionCreate', async (interaction) => {
     // --- /queue ---
     if (commandName === 'queue') {
         const player = client.riffy.players.get(interaction.guildId);
-        if (!player || !player.current) return interaction.reply({ content: '❌ The queue is currently empty!', ephemeral: true });
+        const tracks = player?.queue || [];
+        const current = player?.current;
 
-        const tracks = player.queue;
-        const current = player.current;
+        if (!player || (!current && tracks.length === 0)) {
+            return interaction.reply({ content: '❌ The queue is currently empty!', ephemeral: true });
+        }
+
         const trackList = tracks.slice(0, 10).map((t, idx) => `**${idx + 1}.** [${t.info.title}](${t.info.uri}) (\`${formatDuration(t.info.length)}\`)`).join('\n');
+        const nowPlayingText = current
+            ? `**Now Playing:**\n🎶 [${current.info.title}](${current.info.uri}) (\`${formatDuration(current.info.length)}\`)`
+            : '*No song currently playing (Playback stopped/finished)*';
+
+        const totalTracks = tracks.length + (current ? 1 : 0);
 
         const embed = new EmbedBuilder()
-            .setTitle(`📜 Queue (${tracks.length + 1} tracks)`)
-            .setDescription(`**Now Playing:**\n🎶 [${current.info.title}](${current.info.uri}) (\`${formatDuration(current.info.length)}\`)\n\n**Upcoming Tracks:**\n${trackList || '*No upcoming tracks*'}${tracks.length > 10 ? `\n\n*...and ${tracks.length - 10} more*` : ''}`)
+            .setTitle(`📜 Queue (${totalTracks} track${totalTracks === 1 ? '' : 's'})`)
+            .setDescription(`${nowPlayingText}\n\n**Upcoming Tracks:**\n${trackList || '*No upcoming tracks*'}${tracks.length > 10 ? `\n\n*...and ${tracks.length - 10} more*` : ''}`)
             .setColor(0x5865F2)
             .setFooter({ text: `Volume: ${player.volume}%` });
 
