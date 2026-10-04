@@ -3506,6 +3506,19 @@ const slashCommands = [
                 .setRequired(true)
         ),
     new SlashCommandBuilder()
+        .setName('transfer')
+        .setDescription('Transfer coins/points to another member in the server')
+        .addUserOption(option =>
+            option.setName('user')
+                .setDescription('The member you want to transfer points to')
+                .setRequired(true)
+        )
+        .addStringOption(option =>
+            option.setName('amount')
+                .setDescription('Amount of points to transfer (e.g. 50, 100, all)')
+                .setRequired(true)
+        ),
+    new SlashCommandBuilder()
         .setName('hangman')
         .setDescription('Start an interactive Hangman word guessing game in this channel!')
         .addStringOption(option =>
