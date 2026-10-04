@@ -85,14 +85,28 @@ const client = new Client({
     }
 });
 
-// High-Speed, 429-Immune Lavalink Nodes
+// High-Speed, 429-Immune Multi-Region Lavalink v4 Cluster
 const lavalinkNodes = [
+    {
+        host: 'lavalink.jirayu.net',
+        port: 443,
+        password: 'youshallnotpass',
+        secure: true,
+        name: 'Jirayu-Node'
+    },
+    {
+        host: 'lavalink.serenetia.com',
+        port: 443,
+        password: 'https://seretia.link/discord',
+        secure: true,
+        name: 'Serenetia-Main'
+    },
     {
         host: 'lavalinkv4.serenetia.com',
         port: 443,
         password: 'https://seretia.link/discord',
         secure: true,
-        name: 'Serenetia-Node'
+        name: 'Serenetia-V4'
     },
     {
         host: 'lava-v4.millohost.my.id',
@@ -125,6 +139,58 @@ client.riffy = new Riffy(client, lavalinkNodes, {
     autoMigratePlayers: true,
     migrateOnDisconnect: true
 });
+
+// Resilient Multi-Node Failover Wrapper for Track & Playlist Resolution
+// Prevents network drops on single nodes from failing queries and playlists
+const originalRiffyResolve = client.riffy.resolve.bind(client.riffy);
+
+client.riffy.resolve = async function (options) {
+    const availableNodes = [...this.nodeMap.values()].filter(n => n.connected);
+    if (!availableNodes.length) {
+        return originalRiffyResolve(options);
+    }
+
+    // Prioritize healthy nodes with least penalties
+    availableNodes.sort((a, b) => (a.penalties || 0) - (b.penalties || 0));
+
+    let tryOrder = availableNodes;
+    if (options.node) {
+        const targetNode = typeof options.node === 'string' ? this.nodeMap.get(options.node) : options.node;
+        if (targetNode && targetNode.connected) {
+            tryOrder = [targetNode, ...availableNodes.filter(n => n !== targetNode)];
+        }
+    }
+
+    let lastError = null;
+    let lastResult = null;
+
+    for (const node of tryOrder) {
+        try {
+            const res = await originalRiffyResolve({ ...options, node });
+            if (res && res.tracks && res.tracks.length > 0) {
+                return res;
+            }
+            if (res && res.loadType === 'playlist' && res.tracks?.length) {
+                return res;
+            }
+            if (res && !['empty', 'NO_MATCHES', 'error', 'LOAD_FAILED'].includes(res.loadType)) {
+                return res;
+            }
+            lastResult = res;
+        } catch (err) {
+            console.warn(`[Audio Cluster Failover] Node "${node.name}" encountered request issue (${err.message}). Trying alternative node...`);
+            lastError = err;
+        }
+    }
+
+    if (lastResult && lastResult.tracks) {
+        return lastResult;
+    }
+    if (lastError) {
+        throw lastError;
+    }
+    return { loadType: 'empty', tracks: [] };
+};
 
 // Forward Discord voice state raw packets to Riffy
 client.on('raw', (packet) => {
@@ -5164,23 +5230,15 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: '❌ I am already playing music in another voice channel!', ephemeral: true });
         }
 
-        // If player existed in memory but bot is no longer in any voice channel (disconnected/interrupted), clean it up
-        if (existingPlayer && !botVoiceChannel) {
+        // Clean up any stale/broken player from memory
+        if (existingPlayer && (!botVoiceChannel || !existingPlayer.node?.connected)) {
             try { existingPlayer.destroy(); } catch {}
         }
 
         await interaction.deferReply();
 
         try {
-            const player = client.riffy.createConnection({
-                guildId: interaction.guildId,
-                voiceChannel: voiceChannel.id,
-                textChannel: interaction.channelId,
-                deaf: true
-            });
-
-            player.textChannel = interaction.channelId;
-
+            // 1. Resolve tracks FIRST through our resilient cluster before establishing voice connection
             const resolve = await client.riffy.resolve({
                 query: query,
                 requester: interaction.user
@@ -5190,7 +5248,46 @@ client.on('interactionCreate', async (interaction) => {
                 return interaction.editReply({ content: `❌ No results found for: \`${query}\`` });
             }
 
+            // 2. Establish/retrieve voice connection
+            let player = client.riffy.players.get(interaction.guildId);
+            if (!player || !player.node?.connected) {
+                if (player) {
+                    try { player.destroy(); } catch {}
+                }
+                player = client.riffy.createConnection({
+                    guildId: interaction.guildId,
+                    voiceChannel: voiceChannel.id,
+                    textChannel: interaction.channelId,
+                    deaf: true
+                });
+            }
+
+            player.textChannel = interaction.channelId;
+
             const isActivelyPlaying = Boolean(player.current && player.playing && !player.paused);
+
+            // Safe play trigger function with error handling and retry
+            const safePlay = async () => {
+                try {
+                    if (player.paused) player.pause(false);
+                    await player.play();
+                } catch (playErr) {
+                    console.warn('[Music Player Play Warning]:', playErr.message);
+                    if (playErr.message?.includes('Player connection is not initiated') || playErr.message?.includes('timed out')) {
+                        // Discord voice connection handshake in progress; retry shortly
+                        setTimeout(async () => {
+                            try {
+                                if (player.queue.length || player.current) {
+                                    if (player.paused) player.pause(false);
+                                    await player.play();
+                                }
+                            } catch (retryErr) {
+                                console.error('[Music Player Retry Notice]:', retryErr.message);
+                            }
+                        }, 1500);
+                    }
+                }
+            };
 
             if (resolve.loadType === 'playlist') {
                 for (const track of resolve.tracks) {
@@ -5200,14 +5297,13 @@ client.on('interactionCreate', async (interaction) => {
 
                 const embed = new EmbedBuilder()
                     .setTitle('📑 Playlist Enqueued')
-                    .setDescription(`Added playlist **${resolve.tracks.length}** songs to the queue!`)
+                    .setDescription(`Added playlist with **${resolve.tracks.length}** songs to the queue!`)
                     .setColor(0x5865F2);
 
                 await interaction.editReply({ embeds: [embed] });
 
                 if (!isActivelyPlaying) {
-                    if (player.paused) player.pause(false);
-                    player.play();
+                    await safePlay();
                 }
             } else {
                 const track = resolve.tracks[0];
@@ -5237,9 +5333,7 @@ client.on('interactionCreate', async (interaction) => {
                         );
                     await interaction.editReply({ embeds: [embed] });
 
-                    // Ensure unpaused and trigger play immediately
-                    if (player.paused) player.pause(false);
-                    player.play();
+                    await safePlay();
                 }
             }
         } catch (error) {
@@ -5385,7 +5479,12 @@ client.on('interactionCreate', async (interaction) => {
 
 // Process Safeguards: Prevent crash loops on unhandled rejections
 process.on('unhandledRejection', (reason) => {
-    console.warn('Recovered from unhandled rejection:', reason?.message || reason);
+    const msg = reason?.message || String(reason || '');
+    if (msg.includes('Player connection is not initiated') || msg.includes('timed out')) {
+        console.warn('⚠️ [Voice Notice] Gateway audio connection stabilizing:', msg);
+        return;
+    }
+    console.warn('Recovered from unhandled rejection:', msg);
 });
 
 process.on('uncaughtException', (err) => {
