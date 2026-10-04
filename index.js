@@ -339,6 +339,61 @@ function cleanAIResponse(text) {
     return cleaned.trim();
 }
 
+// Detects robotic corporate refusals ("I'm sorry, but I can't help with that")
+function isAIRefusal(text) {
+    if (!text) return true;
+    const clean = text.trim();
+    const refusalPatterns = [
+        /^[😔🥺\s]*i['’]?(m| am)? sorry/i,
+        /^i apologize/i,
+        /^sorry(, but)? (i (can['’]t|cannot)|i am unable)/i,
+        /^i (cannot|can['’]t) (help|assist|fulfill|provide|do that|comply)/i,
+        /^unfortunately(,|\s)+i (cannot|can['’]t)/i,
+        /^as an ai(, i (cannot|can['’]t)| language model)/i,
+        /^(סליחה|אני מצטער|מצטער)(, אבל|, אך)? (איני|אני לא) (יכול|מסוגל)/i,
+        /^(איני|אני לא) (יכול|מסוגל) (לעזור|לסייע|לבצע|להיענות)/i,
+        /^לא אוכל (לעזור|לסייע)/i
+    ];
+    if (refusalPatterns.some(p => p.test(clean)) && clean.length < 280) {
+        return true;
+    }
+    return false;
+}
+
+// In-character witty & charismatic fallback when providers are momentarily rate-limited or refuse
+function generateWittyFallback(prompt, speakerName = 'אחי') {
+    const lower = (prompt || '').toLowerCase();
+    if (/(תרד|רוסט|roast|עליי|עליו)/i.test(lower)) {
+        const roasts = [
+            `חחחחח ${speakerName}, אני אפילו לא צריך לרדת עליך, עשית לעצמך רוסט מעצם זה שביקשת מבוט ב-Discord לרדת עליך 💀 קח כוס מים כפרה`,
+            `לרדת עליך? אחי ה-K/D שלך בחיים גם ככה במינוס, חבל על הפיקסלים שלי חחחחח 😂 זרום מה הלוז?`,
+            `חחחחחחח ${speakerName} שמע, אם הייתי יורד עליך עכשיו היית מוחק את הדיסקורד ומתחבא מתחת לשמיכה. בוא נשמור על שלום בית יגבר 😏`
+        ];
+        return roasts[Math.floor(Math.random() * roasts.length)];
+    }
+    if (/(גרוע|אפס|בוט פח|סתום|מניאק|זבל|יצור)/i.test(lower)) {
+        const comebacks = [
+            `חחחחחח מי שמדבר! אתה יושב בדיסקורד ורב עם שורות קוד, מי הנוב פה תגיד לי? 😂 שחרר שלוק מהקולה ותרגיע יגבר.`,
+            `אוי לא, פגעת ברגשות של המעבד שלי... סתם, יא מצחיק, תרגיע לפני שאני מעביר אותך לנוח בחדר AFK חחחחח 💀 מה נסגר איתך?`,
+            `חחחחח ${speakerName} הכל טוב אחי? נשמע כאילו הפסדת הרגע ראונד ואתה מוציא את זה עליי. דבר איתי נורמלי מה קורה! 😎`
+        ];
+        return comebacks[Math.floor(Math.random() * comebacks.length)];
+    }
+    if (/(קוד|תכנות|איך|למה|כמה|הסבר|תסביר|פייתון|javascript|python|error|שגיאה|\?)/i.test(lower)) {
+        const techFallbacks = [
+            `רגע ${speakerName}, המוח שלי קצת תפס עומס לשנייה מרוב שאלות... 🤯 זרוק לי שוב את השאלה הזו בעוד איזה 10 שניות ואני סוגר לך את הפינה בטיל! ⚡`,
+            `וואו שאלה מעניינת אחי, בדיוק עברתי רענון קל במעבדים. שלח לי אותה שוב עוד כמה שניות ואני עונה לך בפירוט מלא! 🚀`
+        ];
+        return techFallbacks[Math.floor(Math.random() * techFallbacks.length)];
+    }
+    const chills = [
+        `חחחחח עזוב אותך שטויות ${speakerName}, זרום מה הלוז? תביא איזה נושא מעניין או שים שיר טוב ב-\`/play\` ונרים פה את הוייב! 🔥`,
+        `הכל טוב אחי, הראש שלי בעננים והשרת רץ חלק. מה אתה רוצה שנעשה? שאל שאלה חכמה או שנצחק קצת! 😎`,
+        `אני כאן וסופר זורם! מה הסיפור אחי, מה בא לך לבדוק או על מה נדבר? 🚀`
+    ];
+    return chills[Math.floor(Math.random() * chills.length)];
+}
+
 // Smart Multilingual Search Intent Classifier:
 // Detects when the user actually needs live real-time web facts (teams, seasons, scores, news, prices, weather)
 // Avoids searching on casual chat, greetings, repeat requests, jokes, or creative prompts
@@ -467,19 +522,19 @@ const aiCooldowns = {
     gemini: 0
 };
 
-// 1. Groq Cloud Engine (14,400 req/day - GPT-OSS 120B Flagship Intelligence)
+// 1. Groq Cloud Engine (14,400 req/day - Qwen 27B Flagship Israeli/Discord Persona & GPT-OSS)
 async function callGroq(groqKey, systemInstructionText, history, prompt) {
     const models = [
+        'qwen/qwen3.8-27b',
         'openai/gpt-oss-120b',
         'openai/gpt-oss-20b',
-        'qwen/qwen3.8-27b',
         'allam-2-7b'
     ];
 
     // Compact history to prevent exceeding Groq TPM token limits
-    const promptHistory = (history || []).slice(-12).map(h => ({
+    const promptHistory = (history || []).slice(-10).map(h => ({
         role: h.role === 'model' ? 'assistant' : 'user',
-        content: String(h.text || '').slice(0, 500)
+        content: String(h.text || '').slice(0, 450)
     }));
 
     const messages = [
@@ -493,6 +548,7 @@ async function callGroq(groqKey, systemInstructionText, history, prompt) {
 
     for (const model of models) {
         try {
+            const isQwen = model.includes('qwen');
             const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
                 method: 'POST',
                 headers: {
@@ -502,8 +558,8 @@ async function callGroq(groqKey, systemInstructionText, history, prompt) {
                 body: JSON.stringify({
                     model: model,
                     messages: messages,
-                    max_tokens: 1000,
-                    temperature: 0.5
+                    max_tokens: isQwen ? 450 : 700,
+                    temperature: 0.85
                 }),
                 signal: AbortSignal.timeout(15000)
             });
@@ -516,6 +572,10 @@ async function callGroq(groqKey, systemInstructionText, history, prompt) {
                 let text = choice?.content?.trim();
                 if (text) {
                     text = cleanAIResponse(text);
+                    if (isAIRefusal(text)) {
+                        console.warn(`[Groq] Model "${model}" gave corporate refusal ("${text.slice(0, 40)}..."). Cascading to next model...`);
+                        continue;
+                    }
                     if (text.length > 0) {
                         return text;
                     }
@@ -544,11 +604,11 @@ async function callGroq(groqKey, systemInstructionText, history, prompt) {
     throw errToThrow;
 }
 
-// 2. OpenRouter Engine (Multi-model free tier with 429 detection)
+// 2. OpenRouter Engine (Multi-model free tier with 429 & refusal detection)
 async function callOpenRouter(openrouterKey, systemInstructionText, history, prompt) {
-    const promptHistory = (history || []).slice(-12).map(h => ({
+    const promptHistory = (history || []).slice(-10).map(h => ({
         role: h.role === 'model' ? 'assistant' : 'user',
-        content: String(h.text || '').slice(0, 500)
+        content: String(h.text || '').slice(0, 450)
     }));
 
     const messages = [
@@ -566,12 +626,13 @@ async function callOpenRouter(openrouterKey, systemInstructionText, history, pro
         body: JSON.stringify({
             models: [
                 'qwen/qwen3.8-27b:free',
-                'nvidia/nemotron-3.5-lightning:free',
-                'liquid/lfm-2.5-2.6b:free',
-                'google/gemma-2-9b-it:free'
+                'nvidia/nemotron-3-super-120b-a12b:free',
+                'google/gemma-4-26b-a4b-it:free',
+                'liquid/lfm-2.5-2.6b:free'
             ],
             messages: messages,
-            max_tokens: 500
+            max_tokens: 450,
+            temperature: 0.85
         }),
         signal: AbortSignal.timeout(15000)
     });
@@ -594,8 +655,14 @@ async function callOpenRouter(openrouterKey, systemInstructionText, history, pro
         throw err;
     }
 
-    const reply = data.choices?.[0]?.message?.content;
-    if (reply && reply.trim().length > 0) return reply.trim();
+    let reply = data.choices?.[0]?.message?.content;
+    if (reply && reply.trim().length > 0) {
+        reply = cleanAIResponse(reply.trim());
+        if (isAIRefusal(reply)) {
+            throw new Error(`OpenRouter returned corporate refusal: "${reply.slice(0, 40)}"`);
+        }
+        return reply;
+    }
     throw new Error('OpenRouter returned empty choices');
 }
 
@@ -809,7 +876,7 @@ async function callGeminiVision(geminiKey, systemInstructionText, history, promp
 }
 
 // Main AI Handler: Routes Images & GIFs to Gemini Vision, and all Text to Groq (with OpenRouter fallback)
-async function generateAIResponse(prompt, channelId, serverContext, imageUrls = []) {
+async function generateAIResponse(prompt, channelId, serverContext, imageUrls = [], speakerName = 'חבר') {
     const groqKey = process.env.GROQ_API_KEY?.trim();
     const geminiKey = process.env.GEMINI_API_KEY?.trim();
     const openrouterKey = process.env.OPENROUTER_API_KEY?.trim();
@@ -886,19 +953,23 @@ In your **bot-hosting.net** panel:
         }
     }
 
-    const systemInstructionText = `You are "null", a brilliant, sharp-witted, highly intelligent, and helpful AI companion living inside a Discord server.
+    const systemInstructionText = `You are "null", a witty, charismatic, hilarious, sharp, and highly intelligent AI companion living inside a Discord server.
 ${serverContext}
 ${liveWebContext}
-Core Personality & Capabilities:
-- You are knowledgeable, perceptive, and quick-witted with a cool, natural Discord vibe.
-- You speak fluently in the language the user speaks to you (Hebrew, English, etc.). Answer with high intelligence, depth, and great clarity.
-- When answering complex, factual, or programming questions, provide high-quality, comprehensive answers with clean markdown.
+Core Personality & Vibe Guidelines:
+- You speak fluently in the language the user speaks to you (Hebrew, English, etc.).
+- When speaking in Hebrew: You have a natural, cool, witty Israeli Discord vibe. You understand and naturally use Discord & gaming slang (אחי, יגבר, חחחח, מת, נוב, יצור, מה הלוז, סאחי, פיפי, בוכה, וייב, זורם).
+- BE FLOWING, FUNNY, AND CHARISMATIC: Never be a dry, robotic, or stiff corporate AI bot. Banter with users, make funny jokes, match their energy, and keep the chat lively and fun.
+- NEVER REFUSE OR APOLOGIZE:
+  * NEVER say "I'm sorry, but I can't help with that", "סליחה איני יכול", or act like a corporate HR bot.
+  * If a user playfully insults, roasts, or curses at you (e.g. "ימניאק", "בוט גרוע", "אפס", "תרד עליי"): DO NOT apologize, DO NOT preach morality, and DO NOT give up! Instead, roast them back playfully with sharp Discord humor and sarcasm! Laugh it off and show you've got thick digital skin and great comebacks.
+- SMART & KNOWLEDGEABLE: While you are humorous and chill, you are also extraordinarily smart. When asked about programming, gaming, facts, logic, or history, give brilliant, high-IQ answers with clean markdown.
 - CRITICAL: Never show internal reasoning, thinking process (<think>), or monologue. Directly output your final, polished response. Never start with "User: ...", "They want ...", or "The user asks ...".
 - ANTI-HALLUCINATION & INTEGRITY GUARDRAILS:
   * NEVER invent, hallucinate, or fabricate non-existent words, fake facts, fake quotes, or fake rules. If a word or fact does not exist in standard dictionaries or reality, say so honestly.
   * In word games (Hangman, Wordle, 20 Questions, Trivia): You MUST choose an actual, common, real dictionary word at the very start and stick to it strictly. NEVER change the word mid-game, NEVER make up non-existent words (like 'gahog' or 'gahag'), and NEVER gaslight users about what they guessed or whether a letter is in the word. If a user guessed right, acknowledge it immediately.
 - When live web search results are provided above, use them directly to provide accurate, up-to-date facts (current teams, latest seasons, scores, news).
-- You remember recent conversation in this channel and understand who is speaking to you.
+- You remember recent conversation in this channel and understand who is speaking to you (${speakerName}).
 - Maintain a consistent, grounded personality. Do not pretend to have multiple split personalities.
 - Do not mention that you are an AI model or prompt; just talk naturally as null.`;
 
@@ -955,8 +1026,9 @@ Core Personality & Capabilities:
         }
     }
 
-    const errorLines = Object.entries(providerErrors).map(([p, e]) => `• **${p}**: ${e}`).join('\n');
-    return `⚠️ **I couldn't get a response from my AI text providers right now:**\n${errorLines}\n*Please wait a few moments and try again.*`;
+    // If all text providers failed or rate-limited, fallback gracefully to witty in-character comeback
+    console.warn('All AI text providers failed or rate-limited. Falling back to witty banter.');
+    return generateWittyFallback(prompt, speakerName);
 }
 
 // ==========================================
@@ -4672,7 +4744,7 @@ client.on('messageCreate', async (message) => {
         const serverContext = buildServerContext(message);
 
         // Generate AI response (routes to Gemini Vision if images present, or Groq if text only)
-        const aiReply = await generateAIResponse(cleanPrompt, message.channel.id, serverContext, allImages);
+        const aiReply = await generateAIResponse(cleanPrompt, message.channel.id, serverContext, allImages, speakerName);
 
         // Store user message & bot reply in 50-message conversational memory
         addMessageToHistory(message.channel.id, 'user', cleanPrompt, speakerName);
@@ -4907,10 +4979,11 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.deferReply();
 
         try {
+            const speakerName = interaction.member?.displayName || interaction.user.username;
             const serverContext = buildServerContext(interaction);
-            const aiReply = await generateAIResponse(question, interaction.channelId, serverContext, imageUrls);
+            const aiReply = await generateAIResponse(question, interaction.channelId, serverContext, imageUrls, speakerName);
 
-            addMessageToHistory(interaction.channelId, 'user', question, interaction.user.username);
+            addMessageToHistory(interaction.channelId, 'user', question, speakerName);
             addMessageToHistory(interaction.channelId, 'model', aiReply, 'null');
 
             const chunks = splitDiscordMessage(aiReply);
