@@ -2989,6 +2989,447 @@ function createMusicControlButtons(isPaused = false) {
     return [row1, row2];
 }
 
+// ==========================================
+// 🟢 SPOTIFY ENGINE & TRACK/PLAYLIST RESOLVER
+// ==========================================
+
+function parseSpotifyUrl(input) {
+    if (!input || typeof input !== 'string') return null;
+    const clean = input.trim();
+    const match = clean.match(/(?:https?:\/\/open\.spotify\.com\/(?:intl-[a-z]+\/)?|spotify:)(track|playlist|album|artist)(?:[:\/])([a-zA-Z0-9]+)/i);
+    if (!match) return null;
+    const hasPtToken = /[?&]pt=[a-zA-Z0-9]+/i.test(clean);
+    return {
+        type: match[1].toLowerCase(),
+        id: match[2],
+        hasPtToken,
+        originalUrl: clean
+    };
+}
+
+let spotifyAccessToken = null;
+let spotifyTokenExpiresAt = 0;
+
+async function getSpotifyApiToken() {
+    const clientId = process.env.SPOTIFY_CLIENT_ID?.trim();
+    const clientSecret = process.env.SPOTIFY_CLIENT_SECRET?.trim();
+    if (!clientId || !clientSecret) return null;
+
+    if (spotifyAccessToken && Date.now() < spotifyTokenExpiresAt) {
+        return spotifyAccessToken;
+    }
+
+    try {
+        const auth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+        const res = await fetch('https://accounts.spotify.com/api/token', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Basic ${auth}`,
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: 'grant_type=client_credentials'
+        });
+        if (!res.ok) return null;
+        const data = await res.json();
+        spotifyAccessToken = data.access_token;
+        spotifyTokenExpiresAt = Date.now() + ((data.expires_in || 3600) - 60) * 1000;
+        return spotifyAccessToken;
+    } catch {
+        return null;
+    }
+}
+
+async function resolveSpotify(query) {
+    const parsed = parseSpotifyUrl(query);
+    if (!parsed) return null;
+
+    const { type, id, hasPtToken } = parsed;
+
+    // 1. If user provided official Spotify API keys in .env
+    const token = await getSpotifyApiToken();
+    if (token) {
+        try {
+            if (type === 'track') {
+                const res = await fetch(`https://api.spotify.com/v1/tracks/${id}`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    const artistNames = (data.artists || []).map(a => a.name).join(', ');
+                    return {
+                        type: 'track',
+                        title: data.name,
+                        artist: artistNames,
+                        searchQuery: `${data.name} ${artistNames}`.trim(),
+                        thumbnail: data.album?.images?.[0]?.url || null,
+                        duration: data.duration_ms || 0
+                    };
+                }
+            } else if (type === 'playlist') {
+                const res = await fetch(`https://api.spotify.com/v1/playlists/${id}`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    const tracks = (data.tracks?.items || [])
+                        .filter(item => item && item.track)
+                        .map(item => {
+                            const t = item.track;
+                            const artistNames = (t.artists || []).map(a => a.name).join(', ');
+                            return {
+                                title: t.name,
+                                artist: artistNames,
+                                searchQuery: `${t.name} ${artistNames}`.trim(),
+                                duration: t.duration_ms || 0
+                            };
+                        });
+                    return {
+                        type: 'playlist',
+                        title: data.name,
+                        tracks,
+                        thumbnail: data.images?.[0]?.url || null,
+                        total: tracks.length
+                    };
+                }
+            } else if (type === 'album') {
+                const res = await fetch(`https://api.spotify.com/v1/albums/${id}`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    const artistNames = (data.artists || []).map(a => a.name).join(', ');
+                    const tracks = (data.tracks?.items || []).map(t => {
+                        const trackArtists = (t.artists || []).map(a => a.name).join(', ') || artistNames;
+                        return {
+                            title: t.name,
+                            artist: trackArtists,
+                            searchQuery: `${t.name} ${trackArtists}`.trim(),
+                            duration: t.duration_ms || 0
+                        };
+                    });
+                    return {
+                        type: 'playlist',
+                        title: data.name,
+                        tracks,
+                        thumbnail: data.images?.[0]?.url || null,
+                        total: tracks.length
+                    };
+                }
+            }
+        } catch (err) {
+            console.warn('[Spotify API Error]:', err.message);
+        }
+    }
+
+    // 2. Zero-Config Public Resolvers (No API key needed)
+    if (type === 'track') {
+        try {
+            const oembedRes = await fetch(`https://open.spotify.com/oembed?url=https://open.spotify.com/track/${id}`);
+            if (oembedRes.ok) {
+                const data = await oembedRes.json();
+                const title = data.title || 'Unknown Song';
+                return {
+                    type: 'track',
+                    title: title,
+                    searchQuery: title,
+                    thumbnail: data.thumbnail_url || null
+                };
+            }
+        } catch {}
+    }
+
+    if (type === 'playlist') {
+        try {
+            const embedRes = await fetch(`https://open.spotify.com/embed/playlist/${id}`, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                }
+            });
+
+            const text = await embedRes.text();
+            if (embedRes.status === 404 || text.includes('"status":404') || text.includes('Page not found')) {
+                return {
+                    type: 'error',
+                    isPrivate: true,
+                    hasPtToken,
+                    title: 'Private Playlist',
+                    message: hasPtToken
+                        ? '🔒 **הפלייליסט מוגדר כפרטי (Private) עם קישור שיתוף של עריכה משותפת (`pt=...`).**\n\n' +
+                          'כדי שהבוט יוכל לגשת לשירים ולנגן אותם:\n' +
+                          '1. פתח את הפלייליסט ב-Spotify.\n' +
+                          '2. לחץ על 3 הנקודות (`...`).\n' +
+                          '3. בחר **הפוך לציבורי / Make Public** (או שתף קישור שיתוף רגיל של הפלייליסט).\n' +
+                          'לאחר מכן נסה להפעיל שוב!'
+                        : '🔒 **הפלייליסט מוגדר כפרטי (Private) או שלא נמצא בספוטיפיי.**\n\n' +
+                          'כדי שהבוט יוכל לנגן אותו, וודא שהפלייליסט מוגדר כציבורי (Make Public) באפליקציית Spotify ונסה שוב!'
+                };
+            }
+
+            const idx = text.indexOf('__NEXT_DATA__');
+            if (idx !== -1) {
+                const start = text.indexOf('>', idx) + 1;
+                const end = text.indexOf('</script>', start);
+                const parsedData = JSON.parse(text.slice(start, end));
+                const entity = parsedData.props?.pageProps?.state?.data?.entity;
+
+                if (entity && Array.isArray(entity.trackList) && entity.trackList.length > 0) {
+                    const tracks = entity.trackList.map(t => ({
+                        title: t.title,
+                        artist: t.subtitle || '',
+                        searchQuery: `${t.title} ${t.subtitle || ''}`.trim(),
+                        duration: t.duration || 0,
+                        thumbnail: null
+                    }));
+
+                    return {
+                        type: 'playlist',
+                        title: entity.name || 'Spotify Playlist',
+                        tracks,
+                        total: tracks.length
+                    };
+                }
+            }
+        } catch (err) {
+            console.warn('[Spotify Scraper Notice]:', err.message);
+        }
+    }
+
+    return null;
+}
+
+async function handlePlayRequest(target, query) {
+    const isInteraction = typeof target.isButton === 'function' || typeof target.isCommand === 'function' || target.commandName !== undefined;
+    const user = isInteraction ? target.user : target.author;
+    const member = target.member;
+    const guild = target.guild;
+    const guildId = target.guildId || guild.id;
+    const voiceChannel = member?.voice?.channel;
+    const channelId = target.channelId || target.channel?.id;
+
+    const reply = async (payload) => {
+        if (isInteraction) {
+            if (target.deferred || target.replied) return target.editReply(payload).catch(() => {});
+            return target.reply(payload).catch(() => {});
+        } else {
+            return target.reply(payload).catch(() => {});
+        }
+    };
+
+    if (!voiceChannel) {
+        return reply({ content: '❌ You must be in a voice channel to play music!', ephemeral: true });
+    }
+
+    const permissions = voiceChannel.permissionsFor(client.user);
+    if (!permissions || !permissions.has('Connect') || !permissions.has('Speak')) {
+        return reply({ content: '❌ I do not have permission to Connect or Speak in your voice channel!', ephemeral: true });
+    }
+
+    const existingPlayer = client.riffy.players.get(guildId);
+    const botVoiceChannel = guild.members.me?.voice?.channel;
+
+    if (existingPlayer && botVoiceChannel && botVoiceChannel.id !== voiceChannel.id) {
+        return reply({ content: '❌ I am already playing music in another voice channel!', ephemeral: true });
+    }
+
+    if (isInteraction) {
+        await target.deferReply().catch(() => {});
+    }
+
+    try {
+        // 1. Check for Spotify query
+        const spotifyData = await resolveSpotify(query);
+
+        if (spotifyData && spotifyData.type === 'error' && spotifyData.isPrivate) {
+            const privateEmbed = new EmbedBuilder()
+                .setTitle('🔒 פלייליסט פרטי בספוטיפיי • Private Spotify Playlist')
+                .setDescription(spotifyData.message)
+                .setColor(0xED4245)
+                .setFooter({ text: 'Spotify • null Music Player' });
+            return reply({ embeds: [privateEmbed] });
+        }
+
+        // 2. Establish/retrieve voice connection
+        let player = client.riffy.players.get(guildId);
+        if (player) {
+            if (!player.node?.connected || !player.connected || player.voiceChannel !== voiceChannel.id) {
+                try { player.destroy(); } catch {}
+                player = null;
+            }
+        }
+
+        if (!player) {
+            player = client.riffy.createConnection({
+                guildId: guildId,
+                voiceChannel: voiceChannel.id,
+                textChannel: channelId,
+                deaf: true
+            });
+        }
+
+        player.textChannel = channelId;
+        const isActivelyPlaying = Boolean(player.current && player.playing && !player.paused);
+
+        // Safe play trigger function with error handling and retry
+        const safePlay = async () => {
+            try {
+                if (player.paused) player.pause(false);
+                await player.play();
+            } catch (playErr) {
+                console.warn('[Music Player Play Warning]:', playErr.message);
+                if (playErr.message?.includes('Player connection is not initiated') || playErr.message?.includes('timed out')) {
+                    try {
+                        if (player) {
+                            player.connect({
+                                guildId: guildId,
+                                voiceChannel: voiceChannel.id,
+                                deaf: true,
+                                mute: false
+                            });
+                        }
+                    } catch {}
+
+                    setTimeout(async () => {
+                        try {
+                            if (player && (player.queue.length || player.current)) {
+                                if (player.paused) player.pause(false);
+                                await player.play();
+                            }
+                        } catch (retryErr) {
+                            console.error('[Music Player Retry Notice]:', retryErr.message);
+                        }
+                    }, 2500);
+                }
+            }
+        };
+
+        // Spotify Playlist Handling
+        if (spotifyData && spotifyData.type === 'playlist' && spotifyData.tracks?.length > 0) {
+            const firstItem = spotifyData.tracks[0];
+            const firstResolve = await client.riffy.resolve({
+                query: `ytsearch:${firstItem.searchQuery}`,
+                requester: user
+            }).catch(() => null);
+
+            let firstAdded = false;
+            if (firstResolve && firstResolve.tracks && firstResolve.tracks.length > 0) {
+                const track = firstResolve.tracks[0];
+                track.info.requester = user;
+                player.queue.add(track);
+                firstAdded = true;
+
+                if (!isActivelyPlaying) {
+                    await safePlay();
+                }
+            }
+
+            const embed = new EmbedBuilder()
+                .setTitle(`🟢 Spotify Playlist: ${spotifyData.title}`)
+                .setDescription(
+                    `נוספו **${spotifyData.total}** שירים לסדרת ההשמעה!\n` +
+                    (firstAdded ? `🎶 מתחיל לנגן: **${firstItem.title}** - *${firstItem.artist}*\n` : '') +
+                    `*(שאר השירים נטענים ברקע לתור)*`
+                )
+                .setColor(0x1DB954)
+                .setFooter({ text: 'Spotify Music Integration • High Fidelity Audio' });
+
+            await reply({ embeds: [embed] });
+
+            // Asynchronously resolve and queue remaining tracks
+            (async () => {
+                for (const item of spotifyData.tracks.slice(1)) {
+                    const currPlayer = client.riffy.players.get(guildId);
+                    if (!currPlayer) break;
+                    try {
+                        const r = await client.riffy.resolve({
+                            query: `ytsearch:${item.searchQuery}`,
+                            requester: user
+                        }).catch(() => null);
+
+                        if (r && r.tracks && r.tracks.length > 0) {
+                            const t = r.tracks[0];
+                            t.info.requester = user;
+                            currPlayer.queue.add(t);
+                        }
+                    } catch {}
+                }
+            })();
+
+            return;
+        }
+
+        // Standard or Single Spotify Track Resolution
+        let searchQuery = query;
+        let isSpotifyTrack = false;
+        let spotifyThumb = null;
+
+        if (spotifyData && spotifyData.type === 'track') {
+            searchQuery = `ytsearch:${spotifyData.searchQuery}`;
+            isSpotifyTrack = true;
+            spotifyThumb = spotifyData.thumbnail;
+        }
+
+        const resolve = await client.riffy.resolve({
+            query: searchQuery,
+            requester: user
+        });
+
+        if (!resolve || !resolve.tracks || !resolve.tracks.length) {
+            return reply({ content: `❌ No results found for: \`${query}\`` });
+        }
+
+        if (resolve.loadType === 'playlist') {
+            for (const track of resolve.tracks) {
+                track.info.requester = user;
+                player.queue.add(track);
+            }
+
+            const embed = new EmbedBuilder()
+                .setTitle('📑 Playlist Enqueued')
+                .setDescription(`Added playlist with **${resolve.tracks.length}** songs to the queue!`)
+                .setColor(0x5865F2);
+
+            await reply({ embeds: [embed] });
+
+            if (!isActivelyPlaying) {
+                await safePlay();
+            }
+        } else {
+            const track = resolve.tracks[0];
+            track.info.requester = user;
+            player.queue.add(track);
+
+            if (isActivelyPlaying) {
+                const embed = new EmbedBuilder()
+                    .setTitle(isSpotifyTrack ? '🟢 Added to Queue (Spotify)' : '➕ Added to Queue')
+                    .setDescription(`**[${track.info.title}](${track.info.uri})**\nBy: **${track.info.author}**`)
+                    .setThumbnail(spotifyThumb || track.info.thumbnail || null)
+                    .setColor(isSpotifyTrack ? 0x1DB954 : 0x2B2D31)
+                    .addFields(
+                        { name: 'Duration', value: formatDuration(track.info.length), inline: true },
+                        { name: 'Position', value: `#${player.queue.size}`, inline: true }
+                    );
+                await reply({ embeds: [embed] });
+            } else {
+                const embed = new EmbedBuilder()
+                    .setTitle(isSpotifyTrack ? '🟢 Now Playing (Spotify)' : '🎶 Now Playing')
+                    .setDescription(`**[${track.info.title}](${track.info.uri})**\nBy: **${track.info.author}**`)
+                    .setThumbnail(spotifyThumb || track.info.thumbnail || null)
+                    .setColor(isSpotifyTrack ? 0x1DB954 : 0x5865F2)
+                    .addFields(
+                        { name: 'Duration', value: formatDuration(track.info.length), inline: true },
+                        { name: 'Channel', value: `${voiceChannel.name}`, inline: true }
+                    );
+                await reply({ embeds: [embed] });
+
+                await safePlay();
+            }
+        }
+    } catch (error) {
+        console.error('Play error:', error.message);
+        return reply({ content: `⚠️ Could not play track: ${error.message}` });
+    }
+}
+
 // Riffy Lavalink Event Listeners
 client.riffy.on('nodeConnect', (node) => {
     console.log(`🎧 [LAVALINK] Node "${node.name}" connected and ready!`);
@@ -5555,8 +5996,8 @@ function createHelpEmbed() {
             { name: '🥊 UFC & MMA Fight Center', value: '`/ufc upcoming` (or `.ufc upcoming`) — Upcoming UFC fight cards & dates\n`/ufc rankings [division]` (or `.ufc rankings`) — Real-time UFC champions & contenders\n`/ufc news` (or `.ufc news`) — Latest breaking UFC news from ESPN\n`/ufc watch [fight]` (or `.ufc watch`) — Direct links to stream & replay full fights on **WatchMMAFull.com**\n`/ufc channel #channel` — Auto-posts news & fight alerts to your `#ufc` channel' },
             { name: '🎁 Free Games & Giveaways', value: '`/freegames deals` (or `.freegames` / `.free`) — Current 100% free PC, Steam & Epic games to claim!\n`/freegames channel #channel` — Set or view channel for free game alerts' },
             { name: '🏀 NBA & ⚽ Soccer / Football', value: '`/nba news` & `/nba scores` (or `.nba`) — Breaking NBA news & live scores!\n`/soccer news` & `/soccer scores` (or `.soccer`) — Premier League & UCL news & fixtures!\n`/setup channels` (or `.setup channels`) — Auto-create or connect `#free-games`, `#nba`, `#soccer`, and `#ufc` channels!' },
-            { name: '🎶 Music & Lyrics', value: '`/play <song>` — Play songs or playlists (YouTube, Spotify, SoundCloud)\n`/lyrics [song]` (or `!lyrics`) — Live lyrics lookup for currently playing song or search\n`/pause` — Pause music\n`/resume` — Resume music\n`/skip` — Skip to next song\n`/stop` — Stop playback & disconnect' },
-            { name: '📜 Queue & Audio', value: '`/nowplaying` — Live song display with progress bar & buttons\n`/queue` — Show upcoming songs\n`/shuffle` — Shuffle the queue\n`/volume <1-100>` — Change playback volume' },
+            { name: '🎶 Music & Lyrics', value: '`/play <song>` (or `.play` / `!play`) — Play songs or playlists (YouTube, Spotify playlists & tracks, SoundCloud)\n`/lyrics [song]` (or `!lyrics`) — Live lyrics lookup for currently playing song or search\n`/pause` (or `.pause`) — Pause music\n`/resume` (or `.resume`) — Resume music\n`/skip` (or `.skip`) — Skip to next song\n`/stop` (or `.stop`) — Stop playback & disconnect' },
+            { name: '📜 Queue & Audio', value: '`/nowplaying` — Live song display with progress bar & buttons\n`/queue` (or `.queue`) — Show upcoming songs\n`/shuffle` — Shuffle the queue\n`/volume <1-100>` — Change playback volume' },
             { name: '👋 Welcome & Auto-Role', value: '`/welcome channel #channel` (or `.welcome channel #ch`) — Greet new members with sleek custom cards!\n`/welcome test` (or `.welcome test`) — Preview welcome card in chat\n`/autorole set @role` (or `.autorole @role`) — Give role automatically to new joins' },
             { name: '📊 Server Stats Counters', value: '`/serverstats setup` (or `.serverstats setup`) — Auto-create live locked voice counters (`👥 Members`, `🎙️ In Voice`)!\n`/serverstats update` — Force live counters refresh' },
             { name: '📩 Ticket System (מערכת פניות)', value: '`/tickets setup` (or `.tickets setup`) — Deploy the private support ticket panel with button!\n`/ticket close` (or `.close`) — Close and delete an active ticket channel' },
@@ -7312,6 +7753,72 @@ client.on('messageCreate', async (message) => {
             ).catch(() => {});
         }
 
+        // Music playback prefix commands: .play <query>, !play <query>
+        if (lower === '!play' || lower.startsWith('!play ') || lower.startsWith('.play ')) {
+            const query = normalized.replace(/^!(play)\s*/i, '').trim();
+            if (!query) {
+                return message.reply('🎶 **Usage:** `.play <song name, YouTube URL, or Spotify playlist/song link>`').catch(() => {});
+            }
+            return handlePlayRequest(message, query);
+        }
+
+        if (lower === '!skip' || lower === '.skip') {
+            const player = client.riffy.players.get(message.guild.id);
+            if (!player || !player.current) return message.reply('❌ No music is currently playing!').catch(() => {});
+            const currentTitle = player.current?.info?.title || 'current song';
+            player.stop();
+            return message.reply(`⏭️ Skipped: **${currentTitle}**`).catch(() => {});
+        }
+
+        if (lower === '!stop' || lower === '.stop') {
+            const player = client.riffy.players.get(message.guild.id);
+            if (!player) return message.reply('❌ The bot is not in a voice channel!').catch(() => {});
+            player.queue.clear();
+            player.destroy();
+            return message.reply('⏹️ Playback stopped, queue cleared, and disconnected from voice.').catch(() => {});
+        }
+
+        if (lower === '!pause' || lower === '.pause') {
+            const player = client.riffy.players.get(message.guild.id);
+            if (!player || !player.current) return message.reply('❌ No music is currently playing!').catch(() => {});
+            if (player.paused) return message.reply('⏸️ Music is already paused!').catch(() => {});
+            player.pause(true);
+            return message.reply('⏸️ Playback paused.').catch(() => {});
+        }
+
+        if (lower === '!resume' || lower === '.resume') {
+            const player = client.riffy.players.get(message.guild.id);
+            if (!player || !player.current) return message.reply('❌ No music is currently playing!').catch(() => {});
+            if (!player.paused) return message.reply('▶️ Music is not paused!').catch(() => {});
+            player.pause(false);
+            return message.reply('▶️ Playback resumed.').catch(() => {});
+        }
+
+        if (lower === '!queue' || lower === '.queue') {
+            const player = client.riffy.players.get(message.guild.id);
+            const tracks = player?.queue || [];
+            const current = player?.current;
+
+            if (!current && tracks.length === 0) {
+                return message.reply('📑 The music queue is currently empty.').catch(() => {});
+            }
+
+            const tracksList = tracks.slice(0, 10).map((track, i) =>
+                `\`${i + 1}.\` **[${track.info.title}](${track.info.uri})** (${formatDuration(track.info.length)})`
+            ).join('\n') || '*No upcoming tracks in queue*';
+
+            const embed = new EmbedBuilder()
+                .setTitle('🎶 Music Queue')
+                .setColor(0x5865F2)
+                .setDescription(
+                    `**Now Playing:**\n**[${current ? current.info.title : 'None'}](${current ? current.info.uri : ''})**\n\n` +
+                    `**Up Next:**\n${tracksList}`
+                )
+                .setFooter({ text: `Total Tracks in Queue: ${tracks.length}` });
+
+            return message.reply({ embeds: [embed] }).catch(() => {});
+        }
+
         // Help command: !help / !commands
         if (lower === '!help' || lower === '!commands') {
             const embed = createHelpEmbed();
@@ -8064,150 +8571,7 @@ client.on('interactionCreate', async (interaction) => {
     // --- /play ---
     if (commandName === 'play') {
         const query = interaction.options.getString('query');
-        const voiceChannel = interaction.member?.voice?.channel;
-
-        if (!voiceChannel) {
-            return interaction.reply({ content: '❌ You must be in a voice channel to play music!', ephemeral: true });
-        }
-
-        const permissions = voiceChannel.permissionsFor(interaction.client.user);
-        if (!permissions.has('Connect') || !permissions.has('Speak')) {
-            return interaction.reply({ content: '❌ I do not have permission to Connect or Speak in your voice channel!', ephemeral: true });
-        }
-
-        const existingPlayer = client.riffy.players.get(interaction.guildId);
-        const botVoiceChannel = interaction.guild.members.me?.voice?.channel;
-
-        if (existingPlayer && botVoiceChannel && botVoiceChannel.id !== voiceChannel.id) {
-            return interaction.reply({ content: '❌ I am already playing music in another voice channel!', ephemeral: true });
-        }
-
-        // Clean up any stale/broken player from memory
-        if (existingPlayer && (!botVoiceChannel || !existingPlayer.node?.connected)) {
-            try { existingPlayer.destroy(); } catch {}
-        }
-
-        await interaction.deferReply();
-
-        try {
-            // 1. Resolve tracks FIRST through our resilient cluster before establishing voice connection
-            const resolve = await client.riffy.resolve({
-                query: query,
-                requester: interaction.user
-            });
-
-            if (!resolve || !resolve.tracks || !resolve.tracks.length) {
-                return interaction.editReply({ content: `❌ No results found for: \`${query}\`` });
-            }
-
-            // 2. Establish/retrieve voice connection
-            let player = client.riffy.players.get(interaction.guildId);
-            if (player) {
-                // If player is bound to wrong channel, or node disconnected, or player in broken/uninitiated state
-                if (!player.node?.connected || !player.connected || player.voiceChannel !== voiceChannel.id) {
-                    try { player.destroy(); } catch {}
-                    player = null;
-                }
-            }
-
-            if (!player) {
-                player = client.riffy.createConnection({
-                    guildId: interaction.guildId,
-                    voiceChannel: voiceChannel.id,
-                    textChannel: interaction.channelId,
-                    deaf: true
-                });
-            }
-
-            player.textChannel = interaction.channelId;
-
-            const isActivelyPlaying = Boolean(player.current && player.playing && !player.paused);
-
-            // Safe play trigger function with error handling and retry
-            const safePlay = async () => {
-                try {
-                    if (player.paused) player.pause(false);
-                    await player.play();
-                } catch (playErr) {
-                    console.warn('[Music Player Play Warning]:', playErr.message);
-                    if (playErr.message?.includes('Player connection is not initiated') || playErr.message?.includes('timed out')) {
-                        // Re-send Discord voice connect request in case packet was dropped or delayed
-                        try {
-                            if (player) {
-                                player.connect({
-                                    guildId: interaction.guildId,
-                                    voiceChannel: voiceChannel.id,
-                                    deaf: true,
-                                    mute: false
-                                });
-                            }
-                        } catch {}
-
-                        setTimeout(async () => {
-                            try {
-                                if (player && (player.queue.length || player.current)) {
-                                    if (player.paused) player.pause(false);
-                                    await player.play();
-                                }
-                            } catch (retryErr) {
-                                console.error('[Music Player Retry Notice]:', retryErr.message);
-                            }
-                        }, 2500);
-                    }
-                }
-            };
-
-            if (resolve.loadType === 'playlist') {
-                for (const track of resolve.tracks) {
-                    track.info.requester = interaction.user;
-                    player.queue.add(track);
-                }
-
-                const embed = new EmbedBuilder()
-                    .setTitle('📑 Playlist Enqueued')
-                    .setDescription(`Added playlist with **${resolve.tracks.length}** songs to the queue!`)
-                    .setColor(0x5865F2);
-
-                await interaction.editReply({ embeds: [embed] });
-
-                if (!isActivelyPlaying) {
-                    await safePlay();
-                }
-            } else {
-                const track = resolve.tracks[0];
-                track.info.requester = interaction.user;
-                player.queue.add(track);
-
-                if (isActivelyPlaying) {
-                    const embed = new EmbedBuilder()
-                        .setTitle('➕ Added to Queue')
-                        .setDescription(`**[${track.info.title}](${track.info.uri})**\nBy: **${track.info.author}**`)
-                        .setThumbnail(track.info.thumbnail || null)
-                        .setColor(0x2B2D31)
-                        .addFields(
-                            { name: 'Duration', value: formatDuration(track.info.length), inline: true },
-                            { name: 'Position', value: `#${player.queue.size}`, inline: true }
-                        );
-                    await interaction.editReply({ embeds: [embed] });
-                } else {
-                    const embed = new EmbedBuilder()
-                        .setTitle('🎶 Now Playing')
-                        .setDescription(`**[${track.info.title}](${track.info.uri})**\nBy: **${track.info.author}**`)
-                        .setThumbnail(track.info.thumbnail || null)
-                        .setColor(0x5865F2)
-                        .addFields(
-                            { name: 'Duration', value: formatDuration(track.info.length), inline: true },
-                            { name: 'Channel', value: `${voiceChannel.name}`, inline: true }
-                        );
-                    await interaction.editReply({ embeds: [embed] });
-
-                    await safePlay();
-                }
-            }
-        } catch (error) {
-            console.error('Play error:', error.message);
-            return interaction.editReply({ content: `⚠️ Could not play track: ${error.message}` });
-        }
+        return handlePlayRequest(interaction, query);
     }
 
     // --- /lyrics ---
