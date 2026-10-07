@@ -96,11 +96,11 @@ const lavalinkNodes = [
         name: 'Nazha-Main'
     },
     {
-        host: 'lavalink-v4.triniumhost.com',
+        host: 'lava-v4.millohost.my.id',
         port: 443,
-        password: 'free',
+        password: 'https://discord.gg/mjS5J2K3ep',
         secure: true,
-        name: 'TriniumHost-V4'
+        name: 'MilloHost-Node'
     },
     {
         host: 'lavalinkv4.serenetia.com',
@@ -115,13 +115,6 @@ const lavalinkNodes = [
         password: 'https://seretia.link/discord',
         secure: true,
         name: 'Serenetia-Main'
-    },
-    {
-        host: 'lava-v4.millohost.my.id',
-        port: 443,
-        password: 'https://discord.gg/mjS5J2K3ep',
-        secure: true,
-        name: 'MilloHost-Node'
     }
 ];
 
@@ -160,13 +153,39 @@ client.riffy = new Riffy(client, lavalinkNodes, {
 const originalRiffyResolve = client.riffy.resolve.bind(client.riffy);
 
 client.riffy.resolve = async function (options) {
+    let cleanQuery = typeof options?.query === 'string' ? options.query.trim() : '';
+    let customSource = options?.source;
+
+    // Prevent Riffy prefix duplication bug (e.g. ytsearch: -> ytsearch:ytsearch:)
+    const prefixMatch = cleanQuery.match(/^(ytsearch|ytmsearch|scsearch|spsearch):/i);
+    if (prefixMatch) {
+        customSource = prefixMatch[1].toLowerCase();
+        cleanQuery = cleanQuery.slice(prefixMatch[0].length).trim();
+    }
+
+    const resolvedOptions = {
+        ...options,
+        query: cleanQuery,
+        source: customSource
+    };
+
     const availableNodes = [...this.nodeMap.values()].filter(n => n.connected);
     if (!availableNodes.length) {
-        return originalRiffyResolve(options);
+        return originalRiffyResolve(resolvedOptions);
     }
 
     // Prioritize healthy nodes with least penalties
     availableNodes.sort((a, b) => (a.penalties || 0) - (b.penalties || 0));
+
+    // If resolving a Spotify URL, prioritize nodes with native Spotify support
+    const isSpotifyUrl = /https?:\/\/open\.spotify\.com\/(track|playlist|album|artist)/i.test(cleanQuery);
+    if (isSpotifyUrl) {
+        availableNodes.sort((a, b) => {
+            const aHas = (a.name.includes('Nazha') || a.name.includes('Millo') || a.name.includes('Serenetia')) ? 1 : 0;
+            const bHas = (b.name.includes('Nazha') || b.name.includes('Millo') || b.name.includes('Serenetia')) ? 1 : 0;
+            return bHas - aHas;
+        });
+    }
 
     let tryOrder = availableNodes;
     if (options.node) {
@@ -181,7 +200,7 @@ client.riffy.resolve = async function (options) {
 
     for (const node of tryOrder) {
         try {
-            const res = await originalRiffyResolve({ ...options, node });
+            const res = await originalRiffyResolve({ ...resolvedOptions, node });
             if (res && res.tracks && res.tracks.length > 0) {
                 return res;
             }
@@ -2998,10 +3017,13 @@ function parseSpotifyUrl(input) {
     const clean = input.trim();
     const match = clean.match(/(?:https?:\/\/open\.spotify\.com\/(?:intl-[a-z]+\/)?|spotify:)(track|playlist|album|artist)(?:[:\/])([a-zA-Z0-9]+)/i);
     if (!match) return null;
+    const type = match[1].toLowerCase();
+    const id = match[2];
     const hasPtToken = /[?&]pt=[a-zA-Z0-9]+/i.test(clean);
     return {
-        type: match[1].toLowerCase(),
-        id: match[2],
+        type,
+        id,
+        cleanUrl: `https://open.spotify.com/${type}/${id}`,
         hasPtToken,
         originalUrl: clean
     };
@@ -3236,19 +3258,7 @@ async function handlePlayRequest(target, query) {
     }
 
     try {
-        // 1. Check for Spotify query
-        const spotifyData = await resolveSpotify(query);
-
-        if (spotifyData && spotifyData.type === 'error' && spotifyData.isPrivate) {
-            const privateEmbed = new EmbedBuilder()
-                .setTitle('🔒 פלייליסט פרטי בספוטיפיי • Private Spotify Playlist')
-                .setDescription(spotifyData.message)
-                .setColor(0xED4245)
-                .setFooter({ text: 'Spotify • null Music Player' });
-            return reply({ embeds: [privateEmbed] });
-        }
-
-        // 2. Establish/retrieve voice connection
+        // Establish/retrieve player voice connection
         let player = client.riffy.players.get(guildId);
         if (player) {
             if (!player.node?.connected || !player.connected || player.voiceChannel !== voiceChannel.id) {
@@ -3297,96 +3307,134 @@ async function handlePlayRequest(target, query) {
                         } catch (retryErr) {
                             console.error('[Music Player Retry Notice]:', retryErr.message);
                         }
-                    }, 2500);
+                    }, 1500);
                 }
             }
         };
 
-        // Spotify Playlist Handling
-        if (spotifyData && spotifyData.type === 'playlist' && spotifyData.tracks?.length > 0) {
-            const firstItem = spotifyData.tracks[0];
-            const firstResolve = await client.riffy.resolve({
-                query: `ytsearch:${firstItem.searchQuery}`,
+        const spotifyParsed = parseSpotifyUrl(query);
+        const isSpotify = Boolean(spotifyParsed);
+
+        // 1. DIRECT RESOLUTION VIA LAVALINK CLUSTER (NATIVE SPOTIFY & SEARCH)
+        let resolve = null;
+        const resolveTarget = spotifyParsed ? spotifyParsed.cleanUrl : query;
+
+        try {
+            resolve = await client.riffy.resolve({
+                query: resolveTarget,
                 requester: user
-            }).catch(() => null);
+            });
+        } catch (resErr) {
+            console.warn('[Music Resolve Notice]:', resErr.message);
+        }
 
-            let firstAdded = false;
-            if (firstResolve && firstResolve.tracks && firstResolve.tracks.length > 0) {
-                const track = firstResolve.tracks[0];
-                track.info.requester = user;
-                player.queue.add(track);
-                firstAdded = true;
+        // 2. FALLBACK RESOLUTION FOR SPOTIFY (IF LAVALINK RETURNED EMPTY OR PRIVATE)
+        if (spotifyParsed && (!resolve || !resolve.tracks || resolve.tracks.length === 0)) {
+            const fallbackData = await resolveSpotify(query);
 
-                if (!isActivelyPlaying) {
-                    await safePlay();
-                }
+            if (fallbackData && fallbackData.type === 'error' && fallbackData.isPrivate) {
+                const privateEmbed = new EmbedBuilder()
+                    .setTitle('🔒 פלייליסט פרטי בספוטיפיי • Private Spotify Playlist')
+                    .setDescription(fallbackData.message)
+                    .setColor(0xED4245)
+                    .setFooter({ text: 'Spotify • null Music Player' });
+                return reply({ embeds: [privateEmbed] });
             }
 
-            const embed = new EmbedBuilder()
-                .setTitle(`🟢 Spotify Playlist: ${spotifyData.title}`)
-                .setDescription(
-                    `נוספו **${spotifyData.total}** שירים לסדרת ההשמעה!\n` +
-                    (firstAdded ? `🎶 מתחיל לנגן: **${firstItem.title}** - *${firstItem.artist}*\n` : '') +
-                    `*(שאר השירים נטענים ברקע לתור)*`
-                )
-                .setColor(0x1DB954)
-                .setFooter({ text: 'Spotify Music Integration • High Fidelity Audio' });
+            if (fallbackData && fallbackData.type === 'track') {
+                resolve = await client.riffy.resolve({
+                    query: fallbackData.searchQuery,
+                    requester: user
+                }).catch(() => null);
+            } else if (fallbackData && fallbackData.type === 'playlist' && fallbackData.tracks?.length > 0) {
+                // Resolved via fallback scraper
+                const firstItem = fallbackData.tracks[0];
+                const firstTrackResolve = await client.riffy.resolve({
+                    query: firstItem.searchQuery,
+                    requester: user
+                }).catch(() => null);
 
-            await reply({ embeds: [embed] });
+                let firstAdded = false;
+                if (firstTrackResolve && firstTrackResolve.tracks && firstTrackResolve.tracks.length > 0) {
+                    const track = firstTrackResolve.tracks[0];
+                    track.info.requester = user;
+                    player.queue.add(track);
+                    firstAdded = true;
 
-            // Asynchronously resolve and queue remaining tracks
-            (async () => {
-                for (const item of spotifyData.tracks.slice(1)) {
-                    const currPlayer = client.riffy.players.get(guildId);
-                    if (!currPlayer) break;
-                    try {
-                        const r = await client.riffy.resolve({
-                            query: `ytsearch:${item.searchQuery}`,
-                            requester: user
-                        }).catch(() => null);
-
-                        if (r && r.tracks && r.tracks.length > 0) {
-                            const t = r.tracks[0];
-                            t.info.requester = user;
-                            currPlayer.queue.add(t);
-                        }
-                    } catch {}
+                    if (!isActivelyPlaying) {
+                        await safePlay();
+                    }
                 }
-            })();
 
-            return;
+                const embed = new EmbedBuilder()
+                    .setTitle(`🟢 Spotify Playlist: ${fallbackData.title}`)
+                    .setDescription(
+                        `נוספו **${fallbackData.total}** שירים לסדרת ההשמעה!\n` +
+                        (firstAdded ? `🎶 מתחיל לנגן: **${firstItem.title}** - *${firstItem.artist}*\n` : '') +
+                        `*(שאר השירים נטענים ברקע לתור)*`
+                    )
+                    .setColor(0x1DB954)
+                    .setFooter({ text: 'Spotify Music Integration • High Fidelity Audio' });
+
+                await reply({ embeds: [embed] });
+
+                // Asynchronously resolve remaining tracks in fast parallel batches of 4
+                (async () => {
+                    const remaining = fallbackData.tracks.slice(1);
+                    const batchSize = 4;
+                    for (let i = 0; i < remaining.length; i += batchSize) {
+                        const batch = remaining.slice(i, i + batchSize);
+                        const currPlayer = client.riffy.players.get(guildId);
+                        if (!currPlayer) break;
+
+                        await Promise.all(batch.map(async (item) => {
+                            try {
+                                const r = await client.riffy.resolve({
+                                    query: item.searchQuery,
+                                    requester: user
+                                }).catch(() => null);
+                                if (r && r.tracks && r.tracks.length > 0) {
+                                    const t = r.tracks[0];
+                                    t.info.requester = user;
+                                    currPlayer.queue.add(t);
+                                    if (!currPlayer.playing && !currPlayer.current) {
+                                        await safePlay();
+                                    }
+                                }
+                            } catch {}
+                        }));
+                    }
+                })();
+
+                return;
+            }
         }
-
-        // Standard or Single Spotify Track Resolution
-        let searchQuery = query;
-        let isSpotifyTrack = false;
-        let spotifyThumb = null;
-
-        if (spotifyData && spotifyData.type === 'track') {
-            searchQuery = `ytsearch:${spotifyData.searchQuery}`;
-            isSpotifyTrack = true;
-            spotifyThumb = spotifyData.thumbnail;
-        }
-
-        const resolve = await client.riffy.resolve({
-            query: searchQuery,
-            requester: user
-        });
 
         if (!resolve || !resolve.tracks || !resolve.tracks.length) {
             return reply({ content: `❌ No results found for: \`${query}\`` });
         }
 
+        // 3. ENQUEUE TRACKS (PLAYLIST OR SINGLE TRACK)
         if (resolve.loadType === 'playlist') {
             for (const track of resolve.tracks) {
                 track.info.requester = user;
                 player.queue.add(track);
             }
 
+            const playlistName = resolve.playlistInfo?.name || (isSpotify ? 'Spotify Playlist' : 'Playlist');
+            const totalDurationMs = resolve.tracks.reduce((acc, t) => acc + (t.info?.length || 0), 0);
+            const firstTrack = resolve.tracks[0];
+
             const embed = new EmbedBuilder()
-                .setTitle('📑 Playlist Enqueued')
-                .setDescription(`Added playlist with **${resolve.tracks.length}** songs to the queue!`)
-                .setColor(0x5865F2);
+                .setTitle(isSpotify ? `🟢 Spotify Playlist: ${playlistName}` : `📑 Playlist Enqueued: ${playlistName}`)
+                .setDescription(
+                    `נוספו **${resolve.tracks.length}** שירים לסדרת ההשמעה!\n` +
+                    (firstTrack ? `🎶 ${isActivelyPlaying ? 'הבא בתור' : 'מתחיל לנגן'}: **[${firstTrack.info.title}](${firstTrack.info.uri})**\n` : '') +
+                    `⏱️ אורך כולל: **${formatDuration(totalDurationMs)}**`
+                )
+                .setThumbnail(firstTrack?.info?.thumbnail || (isSpotify ? 'https://open.spotify.com/favicon.ico' : null))
+                .setColor(isSpotify ? 0x1DB954 : 0x5865F2)
+                .setFooter({ text: isSpotify ? 'Spotify Music Integration • High Fidelity Audio' : 'null Music Player' });
 
             await reply({ embeds: [embed] });
 
@@ -3400,10 +3448,10 @@ async function handlePlayRequest(target, query) {
 
             if (isActivelyPlaying) {
                 const embed = new EmbedBuilder()
-                    .setTitle(isSpotifyTrack ? '🟢 Added to Queue (Spotify)' : '➕ Added to Queue')
+                    .setTitle(isSpotify ? '🟢 Added to Queue (Spotify)' : '➕ Added to Queue')
                     .setDescription(`**[${track.info.title}](${track.info.uri})**\nBy: **${track.info.author}**`)
-                    .setThumbnail(spotifyThumb || track.info.thumbnail || null)
-                    .setColor(isSpotifyTrack ? 0x1DB954 : 0x2B2D31)
+                    .setThumbnail(track.info.thumbnail || null)
+                    .setColor(isSpotify ? 0x1DB954 : 0x2B2D31)
                     .addFields(
                         { name: 'Duration', value: formatDuration(track.info.length), inline: true },
                         { name: 'Position', value: `#${player.queue.size}`, inline: true }
@@ -3411,10 +3459,10 @@ async function handlePlayRequest(target, query) {
                 await reply({ embeds: [embed] });
             } else {
                 const embed = new EmbedBuilder()
-                    .setTitle(isSpotifyTrack ? '🟢 Now Playing (Spotify)' : '🎶 Now Playing')
+                    .setTitle(isSpotify ? '🟢 Now Playing (Spotify)' : '🎶 Now Playing')
                     .setDescription(`**[${track.info.title}](${track.info.uri})**\nBy: **${track.info.author}**`)
-                    .setThumbnail(spotifyThumb || track.info.thumbnail || null)
-                    .setColor(isSpotifyTrack ? 0x1DB954 : 0x5865F2)
+                    .setThumbnail(track.info.thumbnail || null)
+                    .setColor(isSpotify ? 0x1DB954 : 0x5865F2)
                     .addFields(
                         { name: 'Duration', value: formatDuration(track.info.length), inline: true },
                         { name: 'Channel', value: `${voiceChannel.name}`, inline: true }
