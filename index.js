@@ -25,7 +25,8 @@ const {
     StringSelectMenuBuilder,
     SlashCommandBuilder,
     AttachmentBuilder,
-    PermissionsBitField
+    PermissionsBitField,
+    ChannelType
 } = require('discord.js');
 const { Riffy } = require('riffy');
 
@@ -1745,6 +1746,605 @@ async function checkAndPostUFCUpdates() {
     } catch (e) {
         console.warn('[UFC Scheduler Notice]:', e.message);
     }
+}
+
+// ==========================================
+// 🎁 FREE GAMES & GIVEAWAYS ENGINE
+// ==========================================
+
+let freeGamesCache = { data: null, timestamp: 0 };
+const postedFreeGameIds = new Set();
+
+async function fetchFreeGames(force = false) {
+    const now = Date.now();
+    if (!force && freeGamesCache.data && (now - freeGamesCache.timestamp < 30 * 60 * 1000)) {
+        return freeGamesCache.data;
+    }
+
+    try {
+        const res = await fetch('https://www.gamerpower.com/api/giveaways?type=game', {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+            signal: AbortSignal.timeout(10000)
+        });
+        if (!res.ok) throw new Error(`GamerPower status ${res.status}`);
+        const data = await res.json();
+        const games = (Array.isArray(data) ? data : []).slice(0, 15).map(g => ({
+            id: String(g.id || g.title),
+            title: g.title,
+            worth: g.worth || 'Free',
+            thumbnail: g.image || g.thumbnail || null,
+            description: (g.description || '').replace(/\r?\n/g, ' ').slice(0, 200),
+            platforms: g.platforms || 'PC',
+            url: g.open_giveaway_url || g.open_giveaway || g.gamerpower_url || 'https://www.gamerpower.com',
+            endDate: g.end_date || 'Limited time'
+        }));
+
+        if (games.length > 0) {
+            freeGamesCache = { data: games, timestamp: now };
+            return games;
+        }
+    } catch (e) {
+        console.warn('[Free Games] Fetch notice:', e.message);
+    }
+    return freeGamesCache.data || [];
+}
+
+function findFreeGamesChannel(guild) {
+    if (!guild || !guild.channels) return null;
+    const saved = levelsCache[`guild_freegames_settings_${guild.id}`];
+    if (saved && saved.channelId) {
+        const ch = guild.channels.cache.get(saved.channelId);
+        if (ch && ch.isTextBased() && !ch.isVoiceBased()) return ch;
+    }
+    return guild.channels.cache.find(c =>
+        c.isTextBased() && !c.isVoiceBased() &&
+        /^(free-games|freegames|free-loot|freebies|games-deals|giveaways)$/i.test(c.name)
+    ) || guild.channels.cache.find(c =>
+        c.isTextBased() && !c.isVoiceBased() &&
+        /(free-games|freegames|freebies)/i.test(c.name)
+    ) || null;
+}
+
+function setGuildFreeGamesChannel(guildId, channelId) {
+    levelsCache[`guild_freegames_settings_${guildId}`] = { channelId };
+    levelsDirty = true;
+    saveLevels();
+}
+
+function buildFreeGamesEmbed(games) {
+    const embed = new EmbedBuilder()
+        .setTitle('🎁 100% Free Games & Giveaways')
+        .setDescription('Here are the latest 100% free games currently available to claim permanently (PC, Steam, Epic Games, etc.)!\n────────────────────────')
+        .setColor(0x00D166)
+        .setTimestamp();
+
+    if (!games || games.length === 0) {
+        embed.setDescription('No free games currently found. Check back later!');
+        return { embed, components: [] };
+    }
+
+    const firstGame = games[0];
+    if (firstGame.thumbnail) embed.setImage(firstGame.thumbnail);
+
+    games.slice(0, 5).forEach((g, idx) => {
+        embed.addFields({
+            name: `${idx === 0 ? '🔥 FEATURED: ' : '🎮 '}${g.title}`,
+            value: `💻 **Platform:** \`${g.platforms}\` • 💰 **Value:** ~~${g.worth}~~ **FREE**\n🔗 [Claim this game](${g.url})\n*${g.description}*`,
+            inline: false
+        });
+    });
+
+    const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setLabel(`🎁 Claim ${firstGame.title.slice(0, 45)}`).setStyle(ButtonStyle.Link).setURL(firstGame.url),
+        new ButtonBuilder().setLabel('🌐 Browse All Free Games').setStyle(ButtonStyle.Link).setURL('https://www.gamerpower.com')
+    );
+
+    return { embed, components: [row] };
+}
+
+async function checkAndPostFreeGamesUpdates() {
+    try {
+        if (!client.guilds || client.guilds.cache.size === 0) return;
+        const games = await fetchFreeGames(true);
+        if (!games || games.length === 0) return;
+
+        const latestGame = games[0];
+        for (const [guildId, guild] of client.guilds.cache) {
+            const ch = findFreeGamesChannel(guild);
+            if (!ch) continue;
+
+            const key = `${guildId}_${latestGame.id}`;
+            if (!postedFreeGameIds.has(key)) {
+                postedFreeGameIds.add(key);
+
+                const embed = new EmbedBuilder()
+                    .setTitle(`🎁 NEW FREE GAME ALERT: ${latestGame.title}`)
+                    .setDescription(`**${latestGame.title}** is currently 100% FREE (Worth ~~${latestGame.worth}~~)!\n\n💻 **Platform:** \`${latestGame.platforms}\`\n⏰ **Ends:** \`${latestGame.endDate}\`\n\n*${latestGame.description}*`)
+                    .setColor(0x00D166)
+                    .setTimestamp();
+                if (latestGame.thumbnail) embed.setImage(latestGame.thumbnail);
+
+                const row = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setLabel(`🎁 Claim ${latestGame.title.slice(0, 45)}`).setStyle(ButtonStyle.Link).setURL(latestGame.url),
+                    new ButtonBuilder().setLabel('🌐 More Free Games').setStyle(ButtonStyle.Link).setURL('https://www.gamerpower.com')
+                );
+
+                await ch.send({
+                    content: `📢 **Free Game Alert!** Grab **${latestGame.title}** before the offer expires!`,
+                    embeds: [embed],
+                    components: [row]
+                }).catch(() => {});
+            }
+        }
+    } catch (e) {
+        console.warn('[Free Games Scheduler Notice]:', e.message);
+    }
+}
+
+// ==========================================
+// 🏀 NBA NEWS & SCOREBOARD ENGINE
+// ==========================================
+
+let nbaNewsCache = { data: null, timestamp: 0 };
+let nbaScoresCache = { data: null, timestamp: 0 };
+const postedNBAArticleIds = new Set();
+
+async function fetchNBANews(force = false) {
+    const now = Date.now();
+    if (!force && nbaNewsCache.data && (now - nbaNewsCache.timestamp < 15 * 60 * 1000)) {
+        return nbaNewsCache.data;
+    }
+    try {
+        const res = await fetch('https://site.api.espn.com/apis/site/v2/sports/basketball/nba/news', {
+            signal: AbortSignal.timeout(8000)
+        });
+        if (!res.ok) throw new Error(`ESPN NBA status ${res.status}`);
+        const data = await res.json();
+        const articles = (data.articles || []).slice(0, 8).map(a => ({
+            id: a.id || a.headline,
+            headline: a.headline,
+            description: a.description || 'No description provided.',
+            link: a.links?.web?.href || 'https://www.espn.com/nba',
+            image: a.images?.[0]?.url || null
+        }));
+        if (articles.length > 0) {
+            nbaNewsCache = { data: articles, timestamp: now };
+            return articles;
+        }
+    } catch (e) {
+        console.warn('[NBA News] Fetch notice:', e.message);
+    }
+    return nbaNewsCache.data || [];
+}
+
+async function fetchNBAScores(force = false) {
+    const now = Date.now();
+    if (!force && nbaScoresCache.data && (now - nbaScoresCache.timestamp < 3 * 60 * 1000)) {
+        return nbaScoresCache.data;
+    }
+    try {
+        const res = await fetch('https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard', {
+            signal: AbortSignal.timeout(8000)
+        });
+        if (!res.ok) throw new Error(`ESPN NBA Scoreboard status ${res.status}`);
+        const data = await res.json();
+        const events = (data.events || []).map(ev => {
+            const comp = ev.competitions?.[0];
+            const home = comp?.competitors?.find(c => c.homeAway === 'home');
+            const away = comp?.competitors?.find(c => c.homeAway === 'away');
+            return {
+                id: ev.id,
+                name: ev.name,
+                status: ev.status?.type?.detail || 'Scheduled',
+                state: ev.status?.type?.state || 'pre',
+                homeTeam: home?.team?.shortDisplayName || home?.team?.displayName || 'Home',
+                homeScore: home?.score || '0',
+                homeRecord: home?.records?.[0]?.summary || '',
+                awayTeam: away?.team?.shortDisplayName || away?.team?.displayName || 'Away',
+                awayScore: away?.score || '0',
+                awayRecord: away?.records?.[0]?.summary || '',
+                link: ev.links?.[0]?.href || 'https://www.espn.com/nba'
+            };
+        });
+        nbaScoresCache = { data: events, timestamp: now };
+        return events;
+    } catch (e) {
+        console.warn('[NBA Scores] Fetch notice:', e.message);
+    }
+    return nbaScoresCache.data || [];
+}
+
+function findNBAChannel(guild) {
+    if (!guild || !guild.channels) return null;
+    const saved = levelsCache[`guild_nba_settings_${guild.id}`];
+    if (saved && saved.channelId) {
+        const ch = guild.channels.cache.get(saved.channelId);
+        if (ch && ch.isTextBased() && !ch.isVoiceBased()) return ch;
+    }
+    return guild.channels.cache.find(c =>
+        c.isTextBased() && !c.isVoiceBased() &&
+        /^(nba|nba-news|basketball|nba-scores)$/i.test(c.name)
+    ) || guild.channels.cache.find(c =>
+        c.isTextBased() && !c.isVoiceBased() &&
+        /(nba|basketball)/i.test(c.name)
+    ) || guild.channels.cache.find(c =>
+        c.isTextBased() && !c.isVoiceBased() &&
+        /^(sports|sports-news)$/i.test(c.name)
+    ) || null;
+}
+
+function setGuildNBAChannel(guildId, channelId) {
+    levelsCache[`guild_nba_settings_${guildId}`] = { channelId };
+    levelsDirty = true;
+    saveLevels();
+}
+
+function buildNBANewsEmbed(articles) {
+    const embed = new EmbedBuilder()
+        .setTitle('🏀 NBA Breaking News & Updates')
+        .setDescription('Latest headlines, roster moves, and game recaps from the NBA:\n────────────────────────')
+        .setColor(0x1D428A)
+        .setTimestamp();
+
+    if (!articles || articles.length === 0) {
+        embed.setDescription('No NBA news found at this moment.');
+        return embed;
+    }
+
+    if (articles[0].image) embed.setImage(articles[0].image);
+
+    articles.slice(0, 5).forEach(a => {
+        embed.addFields({
+            name: `📌 ${a.headline}`,
+            value: `${a.description.slice(0, 180)}...\n🔗 [Read full story on ESPN](${a.link})`
+        });
+    });
+    return embed;
+}
+
+function buildNBAScoresEmbed(events) {
+    const embed = new EmbedBuilder()
+        .setTitle('🏀 NBA Live Scoreboard & Today\'s Games')
+        .setDescription('Live scores, match statuses, and scheduled matchups for today:\n────────────────────────')
+        .setColor(0x1D428A)
+        .setTimestamp();
+
+    if (!events || events.length === 0) {
+        embed.setDescription('No scheduled NBA games found for today. Check back tomorrow!');
+        return embed;
+    }
+
+    events.slice(0, 10).forEach(ev => {
+        const isLive = ev.state === 'in';
+        const isPost = ev.state === 'post';
+        const icon = isLive ? '🔴 LIVE: ' : isPost ? '🏁 FINAL: ' : '⏰ ';
+
+        embed.addFields({
+            name: `${icon}${ev.awayTeam} (${ev.awayScore}) @ ${ev.homeTeam} (${ev.homeScore})`,
+            value: `📊 **Status:** \`${ev.status}\`${ev.homeRecord ? ` • Records: ${ev.awayRecord} vs ${ev.homeRecord}` : ''}\n🔗 [Game Details on ESPN](${ev.link})`,
+            inline: false
+        });
+    });
+    return embed;
+}
+
+async function checkAndPostNBAUpdates() {
+    try {
+        if (!client.guilds || client.guilds.cache.size === 0) return;
+        const news = await fetchNBANews(true);
+        if (!news || news.length === 0) return;
+
+        const latest = news[0];
+        for (const [guildId, guild] of client.guilds.cache) {
+            const ch = findNBAChannel(guild);
+            if (!ch) continue;
+
+            const key = `${guildId}_${latest.id || latest.headline}`;
+            if (!postedNBAArticleIds.has(key)) {
+                postedNBAArticleIds.add(key);
+
+                const embed = new EmbedBuilder()
+                    .setTitle(`🏀 NBA BREAKING: ${latest.headline}`)
+                    .setDescription(`${latest.description}\n\n🔗 [Read Full Story on ESPN](${latest.link})`)
+                    .setColor(0x1D428A)
+                    .setTimestamp();
+                if (latest.image) embed.setImage(latest.image);
+
+                await ch.send({ embeds: [embed] }).catch(() => {});
+            }
+        }
+    } catch (e) {
+        console.warn('[NBA Scheduler Notice]:', e.message);
+    }
+}
+
+// ==========================================
+// ⚽ SOCCER & FOOTBALL ENGINE (EPL & UCL)
+// ==========================================
+
+const soccerNewsCache = {};
+const soccerScoresCache = {};
+const postedSoccerArticleIds = new Set();
+
+async function fetchSoccerNews(league = 'eng.1', force = false) {
+    const now = Date.now();
+    const cacheKey = `soc_news_${league}`;
+    if (!force && soccerNewsCache[cacheKey] && (now - soccerNewsCache[cacheKey].timestamp < 15 * 60 * 1000)) {
+        return soccerNewsCache[cacheKey].data;
+    }
+    try {
+        const url = league === 'uefa.champions'
+            ? 'https://site.api.espn.com/apis/site/v2/sports/soccer/uefa.champions/news'
+            : 'https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/news';
+        const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+        if (!res.ok) throw new Error(`ESPN Soccer status ${res.status}`);
+        const data = await res.json();
+        const articles = (data.articles || []).slice(0, 8).map(a => ({
+            id: a.id || a.headline,
+            headline: a.headline,
+            description: a.description || 'No description provided.',
+            link: a.links?.web?.href || 'https://www.espn.com/soccer',
+            image: a.images?.[0]?.url || null
+        }));
+        if (articles.length > 0) {
+            soccerNewsCache[cacheKey] = { data: articles, timestamp: now };
+            return articles;
+        }
+    } catch (e) {
+        console.warn('[Soccer News] Fetch notice:', e.message);
+    }
+    return soccerNewsCache[cacheKey]?.data || [];
+}
+
+async function fetchSoccerScores(league = 'eng.1', force = false) {
+    const now = Date.now();
+    const cacheKey = `soc_scores_${league}`;
+    if (!force && soccerScoresCache[cacheKey] && (now - soccerScoresCache[cacheKey].timestamp < 3 * 60 * 1000)) {
+        return soccerScoresCache[cacheKey].data;
+    }
+    try {
+        const url = league === 'uefa.champions'
+            ? 'https://site.api.espn.com/apis/site/v2/sports/soccer/uefa.champions/scoreboard'
+            : 'https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/scoreboard';
+        const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+        if (!res.ok) throw new Error(`ESPN Soccer Scoreboard status ${res.status}`);
+        const data = await res.json();
+        const events = (data.events || []).map(ev => {
+            const comp = ev.competitions?.[0];
+            const home = comp?.competitors?.find(c => c.homeAway === 'home');
+            const away = comp?.competitors?.find(c => c.homeAway === 'away');
+            return {
+                id: ev.id,
+                name: ev.name,
+                status: ev.status?.type?.detail || 'Scheduled',
+                state: ev.status?.type?.state || 'pre',
+                homeTeam: home?.team?.shortDisplayName || home?.team?.displayName || 'Home',
+                homeScore: home?.score || '0',
+                awayTeam: away?.team?.shortDisplayName || away?.team?.displayName || 'Away',
+                awayScore: away?.score || '0',
+                link: ev.links?.[0]?.href || 'https://www.espn.com/soccer'
+            };
+        });
+        soccerScoresCache[cacheKey] = { data: events, timestamp: now };
+        return events;
+    } catch (e) {
+        console.warn('[Soccer Scores] Fetch notice:', e.message);
+    }
+    return soccerScoresCache[cacheKey]?.data || [];
+}
+
+function findSoccerChannel(guild) {
+    if (!guild || !guild.channels) return null;
+    const saved = levelsCache[`guild_soccer_settings_${guild.id}`];
+    if (saved && saved.channelId) {
+        const ch = guild.channels.cache.get(saved.channelId);
+        if (ch && ch.isTextBased() && !ch.isVoiceBased()) return ch;
+    }
+    return guild.channels.cache.find(c =>
+        c.isTextBased() && !c.isVoiceBased() &&
+        /^(soccer|football|futbol|soccer-news|champions-league|premier-league)$/i.test(c.name)
+    ) || guild.channels.cache.find(c =>
+        c.isTextBased() && !c.isVoiceBased() &&
+        /(soccer|football|futbol)/i.test(c.name)
+    ) || guild.channels.cache.find(c =>
+        c.isTextBased() && !c.isVoiceBased() &&
+        /^(sports|sports-news)$/i.test(c.name)
+    ) || null;
+}
+
+function setGuildSoccerChannel(guildId, channelId) {
+    levelsCache[`guild_soccer_settings_${guildId}`] = { channelId };
+    levelsDirty = true;
+    saveLevels();
+}
+
+function buildSoccerNewsEmbed(articles, leagueTitle = 'Premier League & Champions League') {
+    const embed = new EmbedBuilder()
+        .setTitle(`⚽ Soccer & Football News • ${leagueTitle}`)
+        .setDescription('Latest football news, transfer updates, and match results:\n────────────────────────')
+        .setColor(0x00A859)
+        .setTimestamp();
+
+    if (!articles || articles.length === 0) {
+        embed.setDescription('No soccer news found at this moment.');
+        return embed;
+    }
+
+    if (articles[0].image) embed.setImage(articles[0].image);
+
+    articles.slice(0, 5).forEach(a => {
+        embed.addFields({
+            name: `📌 ${a.headline}`,
+            value: `${a.description.slice(0, 180)}...\n🔗 [Read full story on ESPN](${a.link})`
+        });
+    });
+    return embed;
+}
+
+function buildSoccerScoresEmbed(events, leagueTitle = 'Matches & Fixtures') {
+    const embed = new EmbedBuilder()
+        .setTitle(`⚽ Soccer Scores & Fixtures • ${leagueTitle}`)
+        .setDescription('Upcoming matches and live football results:\n────────────────────────')
+        .setColor(0x00A859)
+        .setTimestamp();
+
+    if (!events || events.length === 0) {
+        embed.setDescription('No soccer matches scheduled for today. Check upcoming fixtures on ESPN!');
+        return embed;
+    }
+
+    events.slice(0, 10).forEach(ev => {
+        const isLive = ev.state === 'in';
+        const isPost = ev.state === 'post';
+        const icon = isLive ? '🔴 LIVE: ' : isPost ? '🏁 FT: ' : '⏰ ';
+
+        embed.addFields({
+            name: `${icon}${ev.homeTeam} ${ev.homeScore} - ${ev.awayScore} ${ev.awayTeam}`,
+            value: `📊 **Status:** \`${ev.status}\`\n🔗 [Match Center on ESPN](${ev.link})`,
+            inline: false
+        });
+    });
+    return embed;
+}
+
+async function checkAndPostSoccerUpdates() {
+    try {
+        if (!client.guilds || client.guilds.cache.size === 0) return;
+        const news = await fetchSoccerNews('eng.1', true);
+        if (!news || news.length === 0) return;
+
+        const latest = news[0];
+        for (const [guildId, guild] of client.guilds.cache) {
+            const ch = findSoccerChannel(guild);
+            if (!ch) continue;
+
+            const key = `${guildId}_${latest.id || latest.headline}`;
+            if (!postedSoccerArticleIds.has(key)) {
+                postedSoccerArticleIds.add(key);
+
+                const embed = new EmbedBuilder()
+                    .setTitle(`⚽ FOOTBALL BREAKING: ${latest.headline}`)
+                    .setDescription(`${latest.description}\n\n🔗 [Read Full Story on ESPN](${latest.link})`)
+                    .setColor(0x00A859)
+                    .setTimestamp();
+                if (latest.image) embed.setImage(latest.image);
+
+                await ch.send({ embeds: [embed] }).catch(() => {});
+            }
+        }
+    } catch (e) {
+        console.warn('[Soccer Scheduler Notice]:', e.message);
+    }
+}
+
+// ==========================================
+// 🛠️ AUTO CHANNELS SETUP ENGINE
+// ==========================================
+
+async function setupGuildNewsChannels(guild) {
+    if (!guild) return { success: false, message: 'Server not found.' };
+
+    const channelDefinitions = [
+        {
+            key: 'freegames',
+            name: 'free-games',
+            topic: '🎁 Free PC, Steam & Epic Games alerts | null bot',
+            finder: findFreeGamesChannel,
+            setter: setGuildFreeGamesChannel,
+            title: 'Free Games Alert',
+            icon: '🎁'
+        },
+        {
+            key: 'nba',
+            name: 'nba',
+            topic: '🏀 NBA breaking news, live scores & highlights | null bot',
+            finder: findNBAChannel,
+            setter: setGuildNBAChannel,
+            title: 'NBA Hub',
+            icon: '🏀'
+        },
+        {
+            key: 'soccer',
+            name: 'soccer',
+            topic: '⚽ Football & Soccer news (Premier League & Champions League) | null bot',
+            finder: findSoccerChannel,
+            setter: setGuildSoccerChannel,
+            title: 'Soccer / Football',
+            icon: '⚽'
+        },
+        {
+            key: 'ufc',
+            name: 'ufc',
+            topic: '🥊 UFC fight alerts, live rankings & WatchMMAFull links | null bot',
+            finder: findUFCChannel,
+            setter: setGuildUFCChannel,
+            title: 'UFC & MMA Hub',
+            icon: '🥊'
+        }
+    ];
+
+    const results = [];
+    const botMember = guild.members.me || await guild.members.fetch(client.user.id).catch(() => null);
+    const canManageChannels = botMember && botMember.permissions.has(PermissionsBitField.Flags.ManageChannels);
+
+    for (const def of channelDefinitions) {
+        let ch = def.finder(guild);
+        let status = 'found';
+
+        if (!ch) {
+            if (canManageChannels) {
+                try {
+                    ch = await guild.channels.create({
+                        name: def.name,
+                        type: ChannelType.GuildText,
+                        topic: def.topic,
+                        reason: 'null bot automatic news & sports feed setup'
+                    });
+                    def.setter(guild.id, ch.id);
+                    status = 'created';
+                } catch (e) {
+                    status = 'error';
+                }
+            } else {
+                status = 'missing';
+            }
+        } else {
+            def.setter(guild.id, ch.id);
+        }
+
+        results.push({ def, channel: ch, status });
+    }
+
+    const embed = new EmbedBuilder()
+        .setTitle('⚙️ Server Channels & Automated Feeds Setup')
+        .setDescription(
+            'Here is the status of your automated news, alerts, and sports channels:\n' +
+            '*💡 Tip: You can rename any of these channels anytime! The bot will continue posting to them seamlessly.* \n────────────────────────'
+        )
+        .setColor(0x5865F2)
+        .setTimestamp();
+
+    for (const r of results) {
+        let statusText = '';
+        if (r.status === 'created') {
+            statusText = `✨ **Auto-Created!** → <#${r.channel.id}>`;
+        } else if (r.status === 'found') {
+            statusText = `✅ **Connected!** → <#${r.channel.id}>`;
+        } else if (r.status === 'missing') {
+            statusText = `⚠️ **Missing!** Create a channel named \`#${r.def.name}\` (Or give null the \`Manage Channels\` permission to auto-create).`;
+        } else {
+            statusText = `⚠️ Could not create \`#${r.def.name}\`. You can create it manually!`;
+        }
+
+        embed.addFields({
+            name: `${r.def.icon} ${r.def.title}`,
+            value: statusText,
+            inline: false
+        });
+    }
+
+    embed.setFooter({ text: 'Commands: /freegames, /nba, /soccer, /ufc' });
+    return { success: true, embed };
 }
 
 // ==========================================
@@ -4371,6 +4971,8 @@ function createHelpEmbed() {
             { name: '🧠 AI Chat & Web Search', value: '• **Mention `@null`** in any channel to chat!\n• **Reply to null\'s messages** to continue the conversation!\n• `/ask <question> [image]` — Ask AI (Groq for text, Gemini Vision for images/GIFs)\n• Remembers **50 messages** of history and knows server members & roles!' },
             { name: '🎨 AI Image Generation', value: '`/imagine <prompt> [ratio] [provider]` (or `.imagine` / `.draw`) — Generate AI pictures!\n• **Mention `@null create an image of...`** or **`@null תצייר לי...`** in chat!\n• Supports **Stability AI (SD 3.5)**, **AI Horde (Free GPU)**, **ClipDrop**, **Hugging Face (FLUX.1)**, & **Picsart**!\n• Interactive `[🔄 Regenerate]` button on every image!' },
             { name: '🥊 UFC & MMA Fight Center', value: '`/ufc upcoming` (or `.ufc upcoming`) — Upcoming UFC fight cards & dates\n`/ufc rankings [division]` (or `.ufc rankings`) — Real-time UFC champions & contenders\n`/ufc news` (or `.ufc news`) — Latest breaking UFC news from ESPN\n`/ufc watch [fight]` (or `.ufc watch`) — Direct links to stream & replay full fights on **WatchMMAFull.com**\n`/ufc channel #channel` — Auto-posts news & fight alerts to your `#ufc` channel' },
+            { name: '🎁 Free Games & Giveaways', value: '`/freegames deals` (or `.freegames` / `.free`) — Current 100% free PC, Steam & Epic games to claim!\n`/freegames channel #channel` — Set or view channel for free game alerts' },
+            { name: '🏀 NBA & ⚽ Soccer / Football', value: '`/nba news` & `/nba scores` (or `.nba`) — Breaking NBA news & live scores!\n`/soccer news` & `/soccer scores` (or `.soccer`) — Premier League & UCL news & fixtures!\n`/setup channels` (or `.setup channels`) — Auto-create or connect `#free-games`, `#nba`, `#soccer`, and `#ufc` channels!' },
             { name: '🎶 Music & Lyrics', value: '`/play <song>` — Play songs or playlists (YouTube, Spotify, SoundCloud)\n`/lyrics [song]` (or `!lyrics`) — Live lyrics lookup for currently playing song or search\n`/pause` — Pause music\n`/resume` — Resume music\n`/skip` — Skip to next song\n`/stop` — Stop playback & disconnect' },
             { name: '📜 Queue & Audio', value: '`/nowplaying` — Live song display with progress bar & buttons\n`/queue` — Show upcoming songs\n`/shuffle` — Shuffle the queue\n`/volume <1-100>` — Change playback volume' },
             { name: '⚙️ Utilities', value: '`/null` — Bot status, memory diagnostics & AI brain info\n`/ping` — Check latency\n`/help` (or `!help`) — Display this guide' }
@@ -5148,6 +5750,87 @@ const slashCommands = [
                         .setDescription('Select the text channel to post UFC updates to')
                         .setRequired(true)
                 )
+        ),
+    new SlashCommandBuilder()
+        .setName('freegames')
+        .setDescription('🎁 Free Games & Giveaways: View 100% free PC, Steam & Epic games to claim')
+        .addSubcommand(sub =>
+            sub.setName('deals')
+                .setDescription('Browse current 100% free PC and console games')
+        )
+        .addSubcommand(sub =>
+            sub.setName('channel')
+                .setDescription('Set or configure the text channel for new free game alerts')
+                .addChannelOption(opt =>
+                    opt.setName('target')
+                        .setDescription('Select channel for free game alerts')
+                        .setRequired(true)
+                )
+        ),
+    new SlashCommandBuilder()
+        .setName('nba')
+        .setDescription('🏀 NBA Hub: Breaking news, today\'s scoreboard & live games')
+        .addSubcommand(sub =>
+            sub.setName('news')
+                .setDescription('Latest breaking NBA news, trades, and updates from ESPN')
+        )
+        .addSubcommand(sub =>
+            sub.setName('scores')
+                .setDescription('Live scores, match statuses, and scheduled games for today')
+        )
+        .addSubcommand(sub =>
+            sub.setName('channel')
+                .setDescription('Set or configure the channel for NBA breaking news alerts')
+                .addChannelOption(opt =>
+                    opt.setName('target')
+                        .setDescription('Select channel for NBA updates')
+                        .setRequired(true)
+                )
+        ),
+    new SlashCommandBuilder()
+        .setName('soccer')
+        .setDescription('⚽ Soccer & Football Hub: Premier League & Champions League news and scores')
+        .addSubcommand(sub =>
+            sub.setName('news')
+                .setDescription('Breaking soccer news and headlines from ESPN')
+                .addStringOption(opt =>
+                    opt.setName('league')
+                        .setDescription('Select league')
+                        .setRequired(false)
+                        .addChoices(
+                            { name: 'Premier League (EPL)', value: 'eng.1' },
+                            { name: 'UEFA Champions League (UCL)', value: 'uefa.champions' }
+                        )
+                )
+        )
+        .addSubcommand(sub =>
+            sub.setName('scores')
+                .setDescription('Soccer match scores and upcoming fixtures')
+                .addStringOption(opt =>
+                    opt.setName('league')
+                        .setDescription('Select league')
+                        .setRequired(false)
+                        .addChoices(
+                            { name: 'Premier League (EPL)', value: 'eng.1' },
+                            { name: 'UEFA Champions League (UCL)', value: 'uefa.champions' }
+                        )
+                )
+        )
+        .addSubcommand(sub =>
+            sub.setName('channel')
+                .setDescription('Set or configure the channel for soccer updates')
+                .addChannelOption(opt =>
+                    opt.setName('target')
+                        .setDescription('Select channel for soccer updates')
+                        .setRequired(true)
+                )
+        ),
+    new SlashCommandBuilder()
+        .setName('setup')
+        .setDescription('⚙️ Server Setup: Auto-detect or auto-create automated news & sports channels')
+        .addSubcommand(sub =>
+            sub.setName('channels')
+                .setDescription('Auto-detect or auto-create #free-games, #nba, #soccer, and #ufc channels')
         )
 ];
 
@@ -5239,6 +5922,33 @@ const onReady = async () => {
         checkAndPostUFCUpdates().catch(e => console.warn('[UFC Interval]:', e.message));
     }, 2 * 60 * 60 * 1000).unref();
     console.log('🥊 UFC Fight & News Hub initialized (auto-detects #ufc channels).');
+
+    // Start automated Free Games alerts
+    setTimeout(() => {
+        checkAndPostFreeGamesUpdates().catch(e => console.warn('[FreeGames Init]:', e.message));
+    }, 20000);
+    setInterval(() => {
+        checkAndPostFreeGamesUpdates().catch(e => console.warn('[FreeGames Interval]:', e.message));
+    }, 2 * 60 * 60 * 1000).unref();
+    console.log('🎁 Free Games Alert engine initialized (auto-detects #free-games channels).');
+
+    // Start automated NBA Breaking News alerts
+    setTimeout(() => {
+        checkAndPostNBAUpdates().catch(e => console.warn('[NBA Init]:', e.message));
+    }, 25000);
+    setInterval(() => {
+        checkAndPostNBAUpdates().catch(e => console.warn('[NBA Interval]:', e.message));
+    }, 2 * 60 * 60 * 1000).unref();
+    console.log('🏀 NBA News & Scores Hub initialized (auto-detects #nba channels).');
+
+    // Start automated Soccer / Football updates
+    setTimeout(() => {
+        checkAndPostSoccerUpdates().catch(e => console.warn('[Soccer Init]:', e.message));
+    }, 30000);
+    setInterval(() => {
+        checkAndPostSoccerUpdates().catch(e => console.warn('[Soccer Interval]:', e.message));
+    }, 2 * 60 * 60 * 1000).unref();
+    console.log('⚽ Soccer & Football Hub initialized (auto-detects #soccer channels).');
 };
 
 client.once('clientReady', onReady);
@@ -5628,6 +6338,110 @@ client.on('messageCreate', async (message) => {
             const divisions = await fetchUFCRankings();
             const embed = buildUFCRankingsEmbed(divisions, sub);
             return message.reply({ embeds: [embed] }).catch(() => {});
+        }
+
+        // Free Games Hub: !freegames, .freegames, !free, .free, !games, .games
+        if (lower === '!freegames' || lower.startsWith('!freegames ') || lower === '!free' || lower.startsWith('!free ') || lower === '!games' || lower.startsWith('!games ')) {
+            const parts = normalized.split(/\s+/);
+            const sub = (parts[1] || '').toLowerCase();
+
+            if (sub === 'channel' || sub === 'setchannel') {
+                const ch = message.mentions.channels.first();
+                if (!ch) {
+                    const currentCh = findFreeGamesChannel(message.guild);
+                    return message.reply(
+                        currentCh
+                            ? `🎁 Current Free Games alert channel: <#${currentCh.id}>. Use \`.freegames channel #channel\` to change it.`
+                            : `🎁 No Free Games channel set yet! Use \`.freegames channel #channel\` or create \`#free-games\`.`
+                    ).catch(() => {});
+                }
+                setGuildFreeGamesChannel(message.guild.id, ch.id);
+                return message.reply(`✅ Free Games alerts will now be posted to <#${ch.id}>! 🎁`).catch(() => {});
+            }
+
+            await message.channel.sendTyping().catch(() => {});
+            const games = await fetchFreeGames();
+            const payload = buildFreeGamesEmbed(games);
+            return message.reply({ embeds: [payload.embed], components: payload.components }).catch(() => {});
+        }
+
+        // NBA Hub: !nba, .nba, !nba scores, !nba news
+        if (lower === '!nba' || lower.startsWith('!nba ')) {
+            const parts = normalized.split(/\s+/);
+            const sub = (parts[1] || '').toLowerCase();
+
+            if (sub === 'channel' || sub === 'setchannel') {
+                const ch = message.mentions.channels.first();
+                if (!ch) {
+                    const currentCh = findNBAChannel(message.guild);
+                    return message.reply(
+                        currentCh
+                            ? `🏀 Current NBA channel: <#${currentCh.id}>. Use \`.nba channel #channel\` to change it.`
+                            : `🏀 No NBA channel set yet! Use \`.nba channel #channel\` or create \`#nba\`.`
+                    ).catch(() => {});
+                }
+                setGuildNBAChannel(message.guild.id, ch.id);
+                return message.reply(`✅ NBA updates will now be posted to <#${ch.id}>! 🏀`).catch(() => {});
+            }
+
+            if (sub === 'scores' || sub === 'live' || sub === 'games') {
+                await message.channel.sendTyping().catch(() => {});
+                const events = await fetchNBAScores();
+                const embed = buildNBAScoresEmbed(events);
+                return message.reply({ embeds: [embed] }).catch(() => {});
+            }
+
+            // Default to NBA News
+            await message.channel.sendTyping().catch(() => {});
+            const articles = await fetchNBANews();
+            const embed = buildNBANewsEmbed(articles);
+            return message.reply({ embeds: [embed] }).catch(() => {});
+        }
+
+        // Soccer / Football Hub: !soccer, .soccer, !football, .football
+        if (lower === '!soccer' || lower.startsWith('!soccer ') || lower === '!football' || lower.startsWith('!football ')) {
+            const parts = normalized.split(/\s+/);
+            const sub = (parts[1] || '').toLowerCase();
+            const league = (parts[2] || '').toLowerCase().includes('ucl') || sub === 'ucl' ? 'uefa.champions' : 'eng.1';
+            const leagueTitle = league === 'uefa.champions' ? 'UEFA Champions League' : 'Premier League (EPL)';
+
+            if (sub === 'channel' || sub === 'setchannel') {
+                const ch = message.mentions.channels.first();
+                if (!ch) {
+                    const currentCh = findSoccerChannel(message.guild);
+                    return message.reply(
+                        currentCh
+                            ? `⚽ Current Soccer channel: <#${currentCh.id}>. Use \`.soccer channel #channel\` to change it.`
+                            : `⚽ No Soccer channel set yet! Use \`.soccer channel #channel\` or create \`#soccer\`.`
+                    ).catch(() => {});
+                }
+                setGuildSoccerChannel(message.guild.id, ch.id);
+                return message.reply(`✅ Soccer updates will now be posted to <#${ch.id}>! ⚽`).catch(() => {});
+            }
+
+            if (sub === 'scores' || sub === 'games' || sub === 'fixtures') {
+                await message.channel.sendTyping().catch(() => {});
+                const events = await fetchSoccerScores(league);
+                const embed = buildSoccerScoresEmbed(events, leagueTitle);
+                return message.reply({ embeds: [embed] }).catch(() => {});
+            }
+
+            // Default to Soccer News
+            await message.channel.sendTyping().catch(() => {});
+            const articles = await fetchSoccerNews(league);
+            const embed = buildSoccerNewsEmbed(articles, leagueTitle);
+            return message.reply({ embeds: [embed] }).catch(() => {});
+        }
+
+        // Auto Channels Setup: !setup, .setup, !setup channels
+        if (lower === '!setup' || lower === '!setup channels' || lower.startsWith('!setup ')) {
+            await message.channel.sendTyping().catch(() => {});
+            const res = await setupGuildNewsChannels(message.guild);
+            if (res.embed) {
+                return message.reply({ embeds: [res.embed] }).catch(() => {});
+            } else {
+                return message.reply(res.message || '⚠️ Could not complete setup.').catch(() => {});
+            }
         }
 
         // Help command: !help / !commands
@@ -6770,6 +7584,141 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({
                 content: `✅ UFC fight alerts, schedules, and breaking news will now automatically post to <#${channel.id}>! 🥊`
             });
+        }
+    }
+
+    // --- /freegames ---
+    if (commandName === 'freegames') {
+        const sub = interaction.options.getSubcommand();
+
+        if (sub === 'deals') {
+            await interaction.deferReply();
+            try {
+                const games = await fetchFreeGames();
+                const payload = buildFreeGamesEmbed(games);
+                return await interaction.editReply({ embeds: [payload.embed], components: payload.components });
+            } catch (err) {
+                return await interaction.editReply({ content: '⚠️ Error fetching free games: ' + err.message });
+            }
+        }
+
+        if (sub === 'channel') {
+            if (!interaction.guild) {
+                return interaction.reply({ content: '❌ This command can only be used in a server!', ephemeral: true });
+            }
+            const channel = interaction.options.getChannel('target');
+            if (!channel || !channel.isTextBased() || channel.isVoiceBased()) {
+                return interaction.reply({ content: '❌ Please select a valid text channel!', ephemeral: true });
+            }
+            setGuildFreeGamesChannel(interaction.guildId, channel.id);
+            return interaction.reply({
+                content: `✅ New 100% free game alerts will now automatically post to <#${channel.id}>! 🎁`
+            });
+        }
+    }
+
+    // --- /nba ---
+    if (commandName === 'nba') {
+        const sub = interaction.options.getSubcommand();
+
+        if (sub === 'news') {
+            await interaction.deferReply();
+            try {
+                const articles = await fetchNBANews();
+                const embed = buildNBANewsEmbed(articles);
+                return await interaction.editReply({ embeds: [embed] });
+            } catch (err) {
+                return await interaction.editReply({ content: '⚠️ Error fetching NBA news: ' + err.message });
+            }
+        }
+
+        if (sub === 'scores') {
+            await interaction.deferReply();
+            try {
+                const events = await fetchNBAScores();
+                const embed = buildNBAScoresEmbed(events);
+                return await interaction.editReply({ embeds: [embed] });
+            } catch (err) {
+                return await interaction.editReply({ content: '⚠️ Error fetching NBA scores: ' + err.message });
+            }
+        }
+
+        if (sub === 'channel') {
+            if (!interaction.guild) {
+                return interaction.reply({ content: '❌ This command can only be used in a server!', ephemeral: true });
+            }
+            const channel = interaction.options.getChannel('target');
+            if (!channel || !channel.isTextBased() || channel.isVoiceBased()) {
+                return interaction.reply({ content: '❌ Please select a valid text channel!', ephemeral: true });
+            }
+            setGuildNBAChannel(interaction.guildId, channel.id);
+            return interaction.reply({
+                content: `✅ NBA breaking news and updates will now post to <#${channel.id}>! 🏀`
+            });
+        }
+    }
+
+    // --- /soccer ---
+    if (commandName === 'soccer') {
+        const sub = interaction.options.getSubcommand();
+        const league = interaction.options.getString('league') || 'eng.1';
+        const leagueTitle = league === 'uefa.champions' ? 'UEFA Champions League' : 'Premier League (EPL)';
+
+        if (sub === 'news') {
+            await interaction.deferReply();
+            try {
+                const articles = await fetchSoccerNews(league);
+                const embed = buildSoccerNewsEmbed(articles, leagueTitle);
+                return await interaction.editReply({ embeds: [embed] });
+            } catch (err) {
+                return await interaction.editReply({ content: '⚠️ Error fetching soccer news: ' + err.message });
+            }
+        }
+
+        if (sub === 'scores') {
+            await interaction.deferReply();
+            try {
+                const events = await fetchSoccerScores(league);
+                const embed = buildSoccerScoresEmbed(events, leagueTitle);
+                return await interaction.editReply({ embeds: [embed] });
+            } catch (err) {
+                return await interaction.editReply({ content: '⚠️ Error fetching soccer scores: ' + err.message });
+            }
+        }
+
+        if (sub === 'channel') {
+            if (!interaction.guild) {
+                return interaction.reply({ content: '❌ This command can only be used in a server!', ephemeral: true });
+            }
+            const channel = interaction.options.getChannel('target');
+            if (!channel || !channel.isTextBased() || channel.isVoiceBased()) {
+                return interaction.reply({ content: '❌ Please select a valid text channel!', ephemeral: true });
+            }
+            setGuildSoccerChannel(interaction.guildId, channel.id);
+            return interaction.reply({
+                content: `✅ Soccer & Football breaking updates will now post to <#${channel.id}>! ⚽`
+            });
+        }
+    }
+
+    // --- /setup ---
+    if (commandName === 'setup') {
+        const sub = interaction.options.getSubcommand();
+        if (sub === 'channels') {
+            if (!interaction.guild) {
+                return interaction.reply({ content: '❌ This command can only be used in a server!', ephemeral: true });
+            }
+            await interaction.deferReply();
+            try {
+                const res = await setupGuildNewsChannels(interaction.guild);
+                if (res.embed) {
+                    return await interaction.editReply({ embeds: [res.embed] });
+                } else {
+                    return await interaction.editReply({ content: res.message || '⚠️ Setup error.' });
+                }
+            } catch (err) {
+                return await interaction.editReply({ content: '⚠️ Error running channel setup: ' + err.message });
+            }
         }
     }
 });
