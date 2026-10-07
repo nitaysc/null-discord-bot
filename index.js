@@ -1578,8 +1578,7 @@ function buildUFCHubEmbed() {
         .setDescription(
             'Welcome to the server UFC fight center! Check upcoming fight cards, official live rankings, breaking MMA news, and full fight replay links.\n\n' +
             '📺 **Live Stream & Fight Replays:**\n' +
-            '• [Watch on WatchMMAFull.com](https://watchmmafull.com)\n' +
-            '• [Watch on WatchFullMMA.com](https://watchfullmma.com)\n\n' +
+            '• [Watch on WatchMMAFull.com](https://watchmmafull.com)\n\n' +
             '👉 *Before and during any fight, click the watch link below to tune in!*'
         )
         .setColor(0xD20A0A)
@@ -1597,7 +1596,7 @@ function buildUFCEventsEmbed(events) {
         .setTitle('🥊 UFC Upcoming Fight Cards & Schedule')
         .setDescription(
             'Here are the upcoming scheduled UFC events. Before or after each fight, click the links below to stream or watch full fight replays on **WatchMMAFull**!\n\n' +
-            '📺 **Replay & Streaming Sites:** [WatchMMAFull.com](https://watchmmafull.com) • [WatchFullMMA.com](https://watchfullmma.com)\n────────────────────────'
+            '📺 **Replay & Streaming Site:** [WatchMMAFull.com](https://watchmmafull.com)\n────────────────────────'
         )
         .setColor(0xD20A0A)
         .setTimestamp();
@@ -1625,11 +1624,7 @@ function buildUFCEventsEmbed(events) {
         new ButtonBuilder()
             .setLabel('🌐 WatchMMAFull.com')
             .setStyle(ButtonStyle.Link)
-            .setURL('https://watchmmafull.com'),
-        new ButtonBuilder()
-            .setLabel('📺 WatchFullMMA.com')
-            .setStyle(ButtonStyle.Link)
-            .setURL('https://watchfullmma.com')
+            .setURL('https://watchmmafull.com')
     );
 
     return { embed, components: [row] };
@@ -1721,7 +1716,7 @@ async function checkAndPostUFCUpdates() {
 
                     const newsEmbed = new EmbedBuilder()
                         .setTitle(`📰 UFC BREAKING: ${latestArticle.headline}`)
-                        .setDescription(`${latestArticle.description}\n\n🔗 [Read Full Story on ESPN](${latestArticle.link})\n📺 **Watch Fights:** [WatchMMAFull.com](https://watchmmafull.com) • [WatchFullMMA.com](https://watchfullmma.com)`)
+                        .setDescription(`${latestArticle.description}\n\n🔗 [Read Full Story on ESPN](${latestArticle.link})\n📺 **Watch Fights:** [WatchMMAFull.com](https://watchmmafull.com)`)
                         .setColor(0xD20A0A)
                         .setTimestamp();
                     if (latestArticle.image) newsEmbed.setImage(latestArticle.image);
@@ -4375,7 +4370,7 @@ function createHelpEmbed() {
             { name: '🎮 Arcade Minigames', value: '`/hangman [category]` (or `!hangman`) — Interactive Hangman game with real words & ASCII art!\n• Type single letters in chat (e.g. `e`, `a`) or full words to guess!\n• Earn points & XP for finding letters and winning!\n`/hangman-stop` (or `!forfeit`) — Forfeit active game' },
             { name: '🧠 AI Chat & Web Search', value: '• **Mention `@null`** in any channel to chat!\n• **Reply to null\'s messages** to continue the conversation!\n• `/ask <question> [image]` — Ask AI (Groq for text, Gemini Vision for images/GIFs)\n• Remembers **50 messages** of history and knows server members & roles!' },
             { name: '🎨 AI Image Generation', value: '`/imagine <prompt> [ratio] [provider]` (or `.imagine` / `.draw`) — Generate AI pictures!\n• **Mention `@null create an image of...`** or **`@null תצייר לי...`** in chat!\n• Supports **Stability AI (SD 3.5)**, **AI Horde (Free GPU)**, **ClipDrop**, **Hugging Face (FLUX.1)**, & **Picsart**!\n• Interactive `[🔄 Regenerate]` button on every image!' },
-            { name: '🥊 UFC & MMA Fight Center', value: '`/ufc upcoming` (or `.ufc upcoming`) — Upcoming UFC fight cards & dates\n`/ufc rankings [division]` (or `.ufc rankings`) — Real-time UFC champions & contenders\n`/ufc news` (or `.ufc news`) — Latest breaking UFC news from ESPN\n`/ufc watch [fight]` (or `.ufc watch`) — Direct links to stream & replay full fights on **WatchMMAFull.com** & **WatchFullMMA.com**\n`/ufc channel #channel` — Auto-posts news & fight alerts to your `#ufc` channel' },
+            { name: '🥊 UFC & MMA Fight Center', value: '`/ufc upcoming` (or `.ufc upcoming`) — Upcoming UFC fight cards & dates\n`/ufc rankings [division]` (or `.ufc rankings`) — Real-time UFC champions & contenders\n`/ufc news` (or `.ufc news`) — Latest breaking UFC news from ESPN\n`/ufc watch [fight]` (or `.ufc watch`) — Direct links to stream & replay full fights on **WatchMMAFull.com**\n`/ufc channel #channel` — Auto-posts news & fight alerts to your `#ufc` channel' },
             { name: '🎶 Music & Lyrics', value: '`/play <song>` — Play songs or playlists (YouTube, Spotify, SoundCloud)\n`/lyrics [song]` (or `!lyrics`) — Live lyrics lookup for currently playing song or search\n`/pause` — Pause music\n`/resume` — Resume music\n`/skip` — Skip to next song\n`/stop` — Stop playback & disconnect' },
             { name: '📜 Queue & Audio', value: '`/nowplaying` — Live song display with progress bar & buttons\n`/queue` — Show upcoming songs\n`/shuffle` — Shuffle the queue\n`/volume <1-100>` — Change playback volume' },
             { name: '⚙️ Utilities', value: '`/null` — Bot status, memory diagnostics & AI brain info\n`/ping` — Check latency\n`/help` (or `!help`) — Display this guide' }
@@ -5138,7 +5133,7 @@ const slashCommands = [
         )
         .addSubcommand(sub =>
             sub.setName('watch')
-                .setDescription('Get direct fight replay and stream links on WatchMMAFull & WatchFullMMA')
+                .setDescription('Get direct fight replay and stream links on WatchMMAFull')
                 .addStringOption(opt =>
                     opt.setName('fight')
                         .setDescription('Fighter name or event (e.g. Pereira, UFC 313, Jones)')
@@ -5570,8 +5565,7 @@ client.on('messageCreate', async (message) => {
             if (!sub || sub === 'hub') {
                 const embed = buildUFCHubEmbed();
                 const row = new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setLabel('🌐 WatchMMAFull.com').setStyle(ButtonStyle.Link).setURL('https://watchmmafull.com'),
-                    new ButtonBuilder().setLabel('📺 WatchFullMMA.com').setStyle(ButtonStyle.Link).setURL('https://watchfullmma.com')
+                    new ButtonBuilder().setLabel('🌐 WatchMMAFull.com').setStyle(ButtonStyle.Link).setURL('https://watchmmafull.com')
                 );
                 return message.reply({ embeds: [embed], components: [row] }).catch(() => {});
             }
@@ -5603,16 +5597,14 @@ client.on('messageCreate', async (message) => {
                 const embed = new EmbedBuilder()
                     .setTitle(`🥊 Watch UFC / MMA: ${rest || 'Full Fight Replays'}`)
                     .setDescription(
-                        `Click the buttons or links below to stream or watch full replays of UFC events on **WatchMMAFull** & **WatchFullMMA**:\n\n` +
+                        `Click the button or link below to stream or watch full replays of UFC events on **WatchMMAFull**:\n\n` +
                         `• [Direct Link on WatchMMAFull.com](${watchUrl})\n` +
-                        `• [Browse WatchMMAFull.com](https://watchmmafull.com)\n` +
-                        `• [Browse WatchFullMMA.com](https://watchfullmma.com)`
+                        `• [Browse WatchMMAFull.com](https://watchmmafull.com)`
                     )
                     .setColor(0xD20A0A)
                     .setTimestamp();
                 const row = new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setLabel(rest ? `🥊 Watch: ${rest.slice(0, 50)}` : '🥊 WatchMMAFull.com').setStyle(ButtonStyle.Link).setURL(watchUrl),
-                    new ButtonBuilder().setLabel('📺 WatchFullMMA.com').setStyle(ButtonStyle.Link).setURL('https://watchfullmma.com')
+                    new ButtonBuilder().setLabel(rest ? `🥊 Watch: ${rest.slice(0, 50)}` : '🥊 WatchMMAFull.com').setStyle(ButtonStyle.Link).setURL(watchUrl)
                 );
                 return message.reply({ embeds: [embed], components: [row] }).catch(() => {});
             }
@@ -6700,8 +6692,7 @@ client.on('interactionCreate', async (interaction) => {
         if (sub === 'hub') {
             const embed = buildUFCHubEmbed();
             const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setLabel('🌐 WatchMMAFull.com').setStyle(ButtonStyle.Link).setURL('https://watchmmafull.com'),
-                new ButtonBuilder().setLabel('📺 WatchFullMMA.com').setStyle(ButtonStyle.Link).setURL('https://watchfullmma.com')
+                new ButtonBuilder().setLabel('🌐 WatchMMAFull.com').setStyle(ButtonStyle.Link).setURL('https://watchmmafull.com')
             );
             return interaction.reply({ embeds: [embed], components: [row] });
         }
@@ -6748,10 +6739,9 @@ client.on('interactionCreate', async (interaction) => {
             const embed = new EmbedBuilder()
                 .setTitle(`🥊 Watch UFC / MMA: ${fight || 'Full Fight Replays'}`)
                 .setDescription(
-                    `Click below to stream or watch full replays of UFC events, PPVs, and fight cards on **WatchMMAFull** & **WatchFullMMA**:\n\n` +
+                    `Click below to stream or watch full replays of UFC events, PPVs, and fight cards on **WatchMMAFull**:\n\n` +
                     `• [Direct Link on WatchMMAFull.com](${watchUrl})\n` +
-                    `• [Browse WatchMMAFull.com](https://watchmmafull.com)\n` +
-                    `• [Browse WatchFullMMA.com](https://watchfullmma.com)`
+                    `• [Browse WatchMMAFull.com](https://watchmmafull.com)`
                 )
                 .setColor(0xD20A0A)
                 .setTimestamp();
@@ -6760,11 +6750,7 @@ client.on('interactionCreate', async (interaction) => {
                 new ButtonBuilder()
                     .setLabel(fight ? `🥊 Watch: ${fight.slice(0, 50)}` : '🥊 WatchMMAFull.com')
                     .setStyle(ButtonStyle.Link)
-                    .setURL(watchUrl),
-                new ButtonBuilder()
-                    .setLabel('📺 WatchFullMMA.com')
-                    .setStyle(ButtonStyle.Link)
-                    .setURL('https://watchfullmma.com')
+                    .setURL(watchUrl)
             );
 
             return interaction.reply({ embeds: [embed], components: [row] });
