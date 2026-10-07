@@ -89,18 +89,18 @@ const client = new Client({
 // High-Speed, 429-Immune Multi-Region Lavalink v4 Cluster
 const lavalinkNodes = [
     {
-        host: 'lavalink.jirayu.net',
+        host: 'lavalink.nazha.online',
         port: 443,
-        password: 'youshallnotpass',
+        password: 'nazhafreelava',
         secure: true,
-        name: 'Jirayu-Node'
+        name: 'Nazha-Main'
     },
     {
-        host: 'lavalink.serenetia.com',
+        host: 'lavalink-v4.triniumhost.com',
         port: 443,
-        password: 'https://seretia.link/discord',
+        password: 'free',
         secure: true,
-        name: 'Serenetia-Main'
+        name: 'TriniumHost-V4'
     },
     {
         host: 'lavalinkv4.serenetia.com',
@@ -108,6 +108,13 @@ const lavalinkNodes = [
         password: 'https://seretia.link/discord',
         secure: true,
         name: 'Serenetia-V4'
+    },
+    {
+        host: 'lavalink.serenetia.com',
+        port: 443,
+        password: 'https://seretia.link/discord',
+        secure: true,
+        name: 'Serenetia-Main'
     },
     {
         host: 'lava-v4.millohost.my.id',
@@ -132,8 +139,15 @@ if (process.env.LAVALINK_HOST) {
 // Initialize Riffy Lavalink client
 client.riffy = new Riffy(client, lavalinkNodes, {
     send: (payload) => {
-        const guild = client.guilds.cache.get(payload.d?.guild_id);
-        if (guild) guild.shard.send(payload);
+        const guildId = payload.d?.guild_id;
+        if (!guildId) return;
+        const guild = client.guilds.cache.get(guildId);
+        if (guild && guild.shard) {
+            guild.shard.send(payload);
+        } else if (client.ws && client.ws.shards) {
+            const shard = client.ws.shards.first();
+            if (shard) shard.send(payload);
+        }
     },
     defaultSearchPlatform: 'ytsearch',
     restVersion: 'v4',
@@ -195,6 +209,10 @@ client.riffy.resolve = async function (options) {
 
 // Forward Discord voice state raw packets to Riffy
 client.on('raw', (packet) => {
+    if (!['VOICE_STATE_UPDATE', 'VOICE_SERVER_UPDATE'].includes(packet?.t)) return;
+    if (!client.riffy.clientId && client.user?.id) {
+        client.riffy.clientId = client.user.id;
+    }
     client.riffy.updateVoiceState(packet);
 });
 
@@ -8084,10 +8102,15 @@ client.on('interactionCreate', async (interaction) => {
 
             // 2. Establish/retrieve voice connection
             let player = client.riffy.players.get(interaction.guildId);
-            if (!player || !player.node?.connected) {
-                if (player) {
+            if (player) {
+                // If player is bound to wrong channel, or node disconnected, or player in broken/uninitiated state
+                if (!player.node?.connected || !player.connected || player.voiceChannel !== voiceChannel.id) {
                     try { player.destroy(); } catch {}
+                    player = null;
                 }
+            }
+
+            if (!player) {
                 player = client.riffy.createConnection({
                     guildId: interaction.guildId,
                     voiceChannel: voiceChannel.id,
@@ -8108,17 +8131,28 @@ client.on('interactionCreate', async (interaction) => {
                 } catch (playErr) {
                     console.warn('[Music Player Play Warning]:', playErr.message);
                     if (playErr.message?.includes('Player connection is not initiated') || playErr.message?.includes('timed out')) {
-                        // Discord voice connection handshake in progress; retry shortly
+                        // Re-send Discord voice connect request in case packet was dropped or delayed
+                        try {
+                            if (player) {
+                                player.connect({
+                                    guildId: interaction.guildId,
+                                    voiceChannel: voiceChannel.id,
+                                    deaf: true,
+                                    mute: false
+                                });
+                            }
+                        } catch {}
+
                         setTimeout(async () => {
                             try {
-                                if (player.queue.length || player.current) {
+                                if (player && (player.queue.length || player.current)) {
                                     if (player.paused) player.pause(false);
                                     await player.play();
                                 }
                             } catch (retryErr) {
                                 console.error('[Music Player Retry Notice]:', retryErr.message);
                             }
-                        }, 1500);
+                        }, 2500);
                     }
                 }
             };
