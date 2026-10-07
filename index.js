@@ -2348,6 +2348,353 @@ async function setupGuildNewsChannels(guild) {
 }
 
 // ==========================================
+// 🌟 WELCOME & AUTO-ROLE SYSTEM
+// ==========================================
+
+function getGuildWelcomeSettings(guildId) {
+    const key = `guild_welcome_settings_${guildId}`;
+    return levelsCache[key] || { channelId: null, enabled: true, autoRoleId: null, messageText: null };
+}
+
+function setGuildWelcomeSettings(guildId, settings) {
+    const key = `guild_welcome_settings_${guildId}`;
+    levelsCache[key] = { ...(levelsCache[key] || {}), ...settings };
+    levelsDirty = true;
+    saveLevels();
+}
+
+function findWelcomeChannel(guild) {
+    if (!guild || !guild.channels) return null;
+    const settings = getGuildWelcomeSettings(guild.id);
+    if (settings && settings.channelId) {
+        const ch = guild.channels.cache.get(settings.channelId);
+        if (ch && ch.isTextBased() && !ch.isVoiceBased()) return ch;
+    }
+    // Auto-detect by channel name
+    return guild.channels.cache.find(c =>
+        c.isTextBased() && !c.isVoiceBased() &&
+        /^(welcome|joins|ברוכים-הבאים|lobby|hello|welcome-chat)$/i.test(c.name)
+    ) || null;
+}
+
+async function generateWelcomeCard(member) {
+    const guild = member.guild;
+    const username = member.user?.username || member.displayName || 'Member';
+    const memberCount = guild.memberCount || 1;
+
+    if (canvasModule) {
+        try {
+            const { createCanvas, loadImage } = canvasModule;
+            const width = 800;
+            const height = 270;
+            const canvas = createCanvas(width, height);
+            const ctx = canvas.getContext('2d');
+
+            // 1. Dark sleek gradient background
+            const bgGradient = ctx.createLinearGradient(0, 0, width, height);
+            bgGradient.addColorStop(0, '#0a0e17');
+            bgGradient.addColorStop(0.5, '#0f172a');
+            bgGradient.addColorStop(1, '#1e1b4b');
+            ctx.fillStyle = bgGradient;
+            ctx.fillRect(0, 0, width, height);
+
+            // 2. Decorative glowing ambient circles
+            ctx.save();
+            ctx.fillStyle = 'rgba(99, 102, 241, 0.18)';
+            ctx.beginPath();
+            ctx.arc(750, 40, 140, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.fillStyle = 'rgba(168, 85, 247, 0.14)';
+            ctx.beginPath();
+            ctx.arc(80, 240, 110, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+
+            // 3. Card glassmorphism border
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(10, 10, width - 20, height - 20);
+
+            // 4. Avatar with glowing ring
+            const avatarUrl = member.user.displayAvatarURL({ extension: 'png', size: 256, forceStatic: true });
+            let avatarImg = null;
+            try {
+                avatarImg = await loadImage(avatarUrl);
+            } catch {
+                avatarImg = null;
+            }
+
+            const avatarX = 115;
+            const avatarY = 135;
+            const avatarRadius = 65;
+
+            // Outer glowing ring
+            ctx.save();
+            ctx.beginPath();
+            ctx.arc(avatarX, avatarY, avatarRadius + 6, 0, Math.PI * 2);
+            const ringGrad = ctx.createLinearGradient(avatarX - avatarRadius, avatarY - avatarRadius, avatarX + avatarRadius, avatarY + avatarRadius);
+            ringGrad.addColorStop(0, '#6366f1');
+            ringGrad.addColorStop(1, '#a855f7');
+            ctx.strokeStyle = ringGrad;
+            ctx.lineWidth = 5;
+            ctx.shadowColor = '#6366f1';
+            ctx.shadowBlur = 15;
+            ctx.stroke();
+            ctx.restore();
+
+            // Draw circular avatar
+            if (avatarImg) {
+                ctx.save();
+                ctx.beginPath();
+                ctx.arc(avatarX, avatarY, avatarRadius, 0, Math.PI * 2);
+                ctx.closePath();
+                ctx.clip();
+                ctx.drawImage(avatarImg, avatarX - avatarRadius, avatarY - avatarRadius, avatarRadius * 2, avatarRadius * 2);
+                ctx.restore();
+            } else {
+                ctx.save();
+                ctx.fillStyle = '#6366f1';
+                ctx.beginPath();
+                ctx.arc(avatarX, avatarY, avatarRadius, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = '#ffffff';
+                ctx.font = 'bold 50px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(username.slice(0, 1).toUpperCase(), avatarX, avatarY);
+                ctx.restore();
+            }
+
+            // 5. Typography on Right
+            const textStartX = 230;
+
+            // Subtitle: WELCOME TO THE SERVER
+            ctx.fillStyle = '#818cf8';
+            ctx.font = 'bold 16px sans-serif';
+            ctx.fillText('WELCOME TO THE SERVER', textStartX, 80);
+
+            // Main Username
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'bold 36px sans-serif';
+            const displayUser = username.length > 18 ? username.slice(0, 17) + '…' : username;
+            ctx.fillText(displayUser, textStartX, 130);
+
+            // Member Count Capsule Badge
+            const badgeText = `🎉 Member #${memberCount}`;
+            ctx.font = 'bold 18px sans-serif';
+            const textWidth = ctx.measureText(badgeText).width;
+            const badgeW = textWidth + 30;
+            const badgeH = 36;
+            const badgeX = textStartX;
+            const badgeY = 160;
+
+            ctx.save();
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+            ctx.strokeStyle = 'rgba(99, 102, 241, 0.4)';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.roundRect(badgeX, badgeY, badgeW, badgeH, 18);
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.fillStyle = '#38bdf8';
+            ctx.fillText(badgeText, badgeX + 15, badgeY + 25);
+            ctx.restore();
+
+            const buffer = canvas.toBuffer('image/png');
+            return { buffer, filename: `welcome_${member.id}.png` };
+        } catch (err) {
+            console.warn('[Welcome Card Canvas Error]:', err.message);
+        }
+    }
+
+    return null;
+}
+
+function buildWelcomeEmbed(member) {
+    const guild = member.guild;
+    const memberCount = guild.memberCount || 1;
+    const createdDate = member.user?.createdAt ? `<t:${Math.floor(member.user.createdAt.getTime() / 1000)}:R>` : 'Unknown';
+
+    return new EmbedBuilder()
+        .setTitle(`👋 Welcome to ${guild.name}!`)
+        .setDescription(
+            `Hey <@${member.id}>, welcome to **${guild.name}**!\n\n` +
+            `🎉 You are our **#${memberCount}** member!\n` +
+            `🗓️ **Account Created:** ${createdDate}\n\n` +
+            `We're thrilled to have you here. Have fun and enjoy your stay! ✨`
+        )
+        .setThumbnail(member.user?.displayAvatarURL({ size: 256 }) || null)
+        .setColor(0x6366F1)
+        .setTimestamp();
+}
+
+// ==========================================
+// 📊 SERVER STATS LIVE COUNTERS SYSTEM
+// ==========================================
+
+const serverStatsCooldowns = new Map(); // guildId -> lastUpdateTimestamp
+
+function getGuildServerStatsSettings(guildId) {
+    const key = `guild_serverstats_settings_${guildId}`;
+    return levelsCache[key] || { enabled: false, categoryId: null, membersChannelId: null, voiceChannelId: null };
+}
+
+function setGuildServerStatsSettings(guildId, settings) {
+    const key = `guild_serverstats_settings_${guildId}`;
+    levelsCache[key] = { ...(levelsCache[key] || {}), ...settings };
+    levelsDirty = true;
+    saveLevels();
+}
+
+async function updateGuildServerStats(guild, force = false) {
+    if (!guild) return;
+    const settings = getGuildServerStatsSettings(guild.id);
+    if (!settings || !settings.enabled) return;
+
+    const now = Date.now();
+    const lastUpdate = serverStatsCooldowns.get(guild.id) || 0;
+    // Discord allows only 2 renames per 10 minutes per channel. We enforce a 6-minute cooldown between renames.
+    if (!force && (now - lastUpdate < 6 * 60 * 1000)) {
+        return;
+    }
+
+    try {
+        const totalMembers = guild.memberCount || 0;
+
+        // Calculate active voice members
+        let inVoiceCount = 0;
+        for (const [userId, vs] of guild.voiceStates.cache) {
+            if (vs.channelId && vs.channelId !== guild.afkChannelId) {
+                inVoiceCount++;
+            }
+        }
+
+        serverStatsCooldowns.set(guild.id, now);
+
+        // Update Total Members Channel
+        if (settings.membersChannelId) {
+            const ch = guild.channels.cache.get(settings.membersChannelId);
+            if (ch && ch.isVoiceBased()) {
+                const targetName = `👥 חברים: ${totalMembers.toLocaleString()}`;
+                if (ch.name !== targetName) {
+                    await ch.setName(targetName).catch(() => {});
+                }
+            }
+        }
+
+        // Update In Voice Channel
+        if (settings.voiceChannelId) {
+            const ch = guild.channels.cache.get(settings.voiceChannelId);
+            if (ch && ch.isVoiceBased()) {
+                const targetName = `🎙️ בשיחה: ${inVoiceCount.toLocaleString()}`;
+                if (ch.name !== targetName) {
+                    await ch.setName(targetName).catch(() => {});
+                }
+            }
+        }
+    } catch (err) {
+        console.warn('[ServerStats Update Notice]:', err.message);
+    }
+}
+
+async function setupGuildServerStats(guild) {
+    if (!guild) return { success: false, message: 'Server not found.' };
+
+    const botMember = guild.members.me || await guild.members.fetch(client.user.id).catch(() => null);
+    if (!botMember || !botMember.permissions.has(PermissionsBitField.Flags.ManageChannels)) {
+        return {
+            success: false,
+            message: '❌ null needs the **Manage Channels** permission to create server stats counters!'
+        };
+    }
+
+    const currentSettings = getGuildServerStatsSettings(guild.id);
+    const everyoneRole = guild.roles.everyone;
+
+    // Permissions: Visible to everyone, but CONNECT denied so users cannot join
+    const channelPermissions = [
+        {
+            id: everyoneRole.id,
+            deny: [PermissionsBitField.Flags.Connect],
+            allow: [PermissionsBitField.Flags.ViewChannel]
+        }
+    ];
+
+    try {
+        let category = currentSettings.categoryId ? guild.channels.cache.get(currentSettings.categoryId) : null;
+        if (!category) {
+            category = await guild.channels.create({
+                name: '📊 SERVER STATS',
+                type: ChannelType.GuildCategory,
+                permissionOverwrites: channelPermissions
+            });
+        }
+
+        const totalMembers = guild.memberCount || 1;
+        let inVoiceCount = 0;
+        for (const [userId, vs] of guild.voiceStates.cache) {
+            if (vs.channelId && vs.channelId !== guild.afkChannelId) {
+                inVoiceCount++;
+            }
+        }
+
+        // 1. Members counter channel
+        let membersChannel = currentSettings.membersChannelId ? guild.channels.cache.get(currentSettings.membersChannelId) : null;
+        if (!membersChannel) {
+            membersChannel = await guild.channels.create({
+                name: `👥 חברים: ${totalMembers.toLocaleString()}`,
+                type: ChannelType.GuildVoice,
+                parent: category.id,
+                permissionOverwrites: channelPermissions
+            });
+        } else {
+            await membersChannel.setName(`👥 חברים: ${totalMembers.toLocaleString()}`).catch(() => {});
+        }
+
+        // 2. Active in Voice counter channel
+        let voiceChannel = currentSettings.voiceChannelId ? guild.channels.cache.get(currentSettings.voiceChannelId) : null;
+        if (!voiceChannel) {
+            voiceChannel = await guild.channels.create({
+                name: `🎙️ בשיחה: ${inVoiceCount.toLocaleString()}`,
+                type: ChannelType.GuildVoice,
+                parent: category.id,
+                permissionOverwrites: channelPermissions
+            });
+        } else {
+            await voiceChannel.setName(`🎙️ בשיחה: ${inVoiceCount.toLocaleString()}`).catch(() => {});
+        }
+
+        setGuildServerStatsSettings(guild.id, {
+            enabled: true,
+            categoryId: category.id,
+            membersChannelId: membersChannel.id,
+            voiceChannelId: voiceChannel.id
+        });
+
+        serverStatsCooldowns.set(guild.id, Date.now());
+
+        const embed = new EmbedBuilder()
+            .setTitle('📊 Server Stats Live Counters — Activated!')
+            .setDescription(
+                'Live statistics counters have been successfully set up at the top of your server!\n\n' +
+                `📁 **Category:** \`📊 SERVER STATS\`\n` +
+                `👥 **Total Members Counter:** <#${membersChannel.id}>\n` +
+                `🎙️ **Active Voice Counter:** <#${voiceChannel.id}>\n\n` +
+                '🔒 *These voice channels are locked so members cannot join or make noise.* \n' +
+                '🔄 *Counters automatically update every few minutes and when members join/leave!*'
+            )
+            .setColor(0x2BB6A6)
+            .setTimestamp();
+
+        return { success: true, embed };
+    } catch (e) {
+        return { success: false, message: `❌ Error setting up server stats: ${e.message}` };
+    }
+}
+
+// ==========================================
 // 🎵 MUSIC HELPERS & CONTROLS
 // ==========================================
 
@@ -4975,6 +5322,8 @@ function createHelpEmbed() {
             { name: '🏀 NBA & ⚽ Soccer / Football', value: '`/nba news` & `/nba scores` (or `.nba`) — Breaking NBA news & live scores!\n`/soccer news` & `/soccer scores` (or `.soccer`) — Premier League & UCL news & fixtures!\n`/setup channels` (or `.setup channels`) — Auto-create or connect `#free-games`, `#nba`, `#soccer`, and `#ufc` channels!' },
             { name: '🎶 Music & Lyrics', value: '`/play <song>` — Play songs or playlists (YouTube, Spotify, SoundCloud)\n`/lyrics [song]` (or `!lyrics`) — Live lyrics lookup for currently playing song or search\n`/pause` — Pause music\n`/resume` — Resume music\n`/skip` — Skip to next song\n`/stop` — Stop playback & disconnect' },
             { name: '📜 Queue & Audio', value: '`/nowplaying` — Live song display with progress bar & buttons\n`/queue` — Show upcoming songs\n`/shuffle` — Shuffle the queue\n`/volume <1-100>` — Change playback volume' },
+            { name: '👋 Welcome & Auto-Role', value: '`/welcome channel #channel` (or `.welcome channel #ch`) — Greet new members with sleek custom cards!\n`/welcome test` (or `.welcome test`) — Preview welcome card in chat\n`/autorole set @role` (or `.autorole @role`) — Give role automatically to new joins' },
+            { name: '📊 Server Stats Counters', value: '`/serverstats setup` (or `.serverstats setup`) — Auto-create live locked voice counters (`👥 Members`, `🎙️ In Voice`)!\n`/serverstats update` — Force live counters refresh' },
             { name: '⚙️ Utilities', value: '`/null` — Bot status, memory diagnostics & AI brain info\n`/ping` — Check latency\n`/help` (or `!help`) — Display this guide' }
         )
         .setFooter({ text: 'null Music • Interactive Controls Available on Playback' });
@@ -5831,6 +6180,53 @@ const slashCommands = [
         .addSubcommand(sub =>
             sub.setName('channels')
                 .setDescription('Auto-detect or auto-create #free-games, #nba, #soccer, and #ufc channels')
+        ),
+    new SlashCommandBuilder()
+        .setName('welcome')
+        .setDescription('👋 Welcome System: Configure welcome messages, canvas cards, and greetings')
+        .addSubcommand(sub =>
+            sub.setName('channel')
+                .setDescription('Set the text channel for new member welcome cards')
+                .addChannelOption(opt =>
+                    opt.setName('target')
+                        .setDescription('Select welcome channel')
+                        .setRequired(true)
+                )
+        )
+        .addSubcommand(sub =>
+            sub.setName('test')
+                .setDescription('Test the welcome card and greeting in this channel')
+        )
+        .addSubcommand(sub =>
+            sub.setName('disable')
+                .setDescription('Disable welcome greeting messages')
+        ),
+    new SlashCommandBuilder()
+        .setName('autorole')
+        .setDescription('🏷️ Auto-Role: Automatically give a role to new members when they join')
+        .addSubcommand(sub =>
+            sub.setName('set')
+                .setDescription('Select role to give automatically to new members')
+                .addRoleOption(opt =>
+                    opt.setName('role')
+                        .setDescription('Role to grant upon join')
+                        .setRequired(true)
+                )
+        )
+        .addSubcommand(sub =>
+            sub.setName('disable')
+                .setDescription('Disable auto-role on join')
+        ),
+    new SlashCommandBuilder()
+        .setName('serverstats')
+        .setDescription('📊 Server Stats: Auto-updating locked voice channel member and voice counters')
+        .addSubcommand(sub =>
+            sub.setName('setup')
+                .setDescription('Automatically create the 📊 SERVER STATS category and counter channels')
+        )
+        .addSubcommand(sub =>
+            sub.setName('update')
+                .setDescription('Force an immediate counter update (subject to Discord 6-min cooldown)')
         )
 ];
 
@@ -5949,9 +6345,80 @@ const onReady = async () => {
         checkAndPostSoccerUpdates().catch(e => console.warn('[Soccer Interval]:', e.message));
     }, 2 * 60 * 60 * 1000).unref();
     console.log('⚽ Soccer & Football Hub initialized (auto-detects #soccer channels).');
+
+    // Start automated Server Stats live counters updater (every 6 mins to respect Discord channel rename limit)
+    setTimeout(() => {
+        for (const guild of client.guilds.cache.values()) {
+            updateGuildServerStats(guild, true).catch(() => {});
+        }
+    }, 35000);
+    setInterval(() => {
+        for (const guild of client.guilds.cache.values()) {
+            updateGuildServerStats(guild).catch(() => {});
+        }
+    }, 6 * 60 * 1000).unref();
 };
 
 client.once('clientReady', onReady);
+
+// ==========================================
+// 🌟 GUILD MEMBER EVENTS (Welcome, Auto-Role, Stats)
+// ==========================================
+client.on('guildMemberAdd', async (member) => {
+    if (!member || !member.guild) return;
+    const guild = member.guild;
+
+    // 1. Auto-Role assignment
+    try {
+        const settings = getGuildWelcomeSettings(guild.id);
+        if (settings && settings.autoRoleId) {
+            const role = guild.roles.cache.get(settings.autoRoleId);
+            if (role) {
+                await member.roles.add(role).catch(e => console.warn('[AutoRole Notice]:', e.message));
+            }
+        }
+    } catch (e) {
+        console.warn('[AutoRole Exception]:', e.message);
+    }
+
+    // 2. Welcome Message & Card
+    try {
+        const settings = getGuildWelcomeSettings(guild.id);
+        if (settings.enabled !== false) {
+            const channel = findWelcomeChannel(guild);
+            if (channel) {
+                const card = await generateWelcomeCard(member);
+                const welcomeText = settings.messageText
+                    ? settings.messageText.replace('{user}', `<@${member.id}>`).replace('{count}', String(guild.memberCount))
+                    : `👋 Welcome <@${member.id}> to **${guild.name}**! Enjoy your stay! 🎉`;
+
+                if (card && card.buffer) {
+                    const attachment = new AttachmentBuilder(card.buffer, { name: card.filename });
+                    await channel.send({
+                        content: welcomeText,
+                        files: [attachment]
+                    }).catch(() => {});
+                } else {
+                    const embed = buildWelcomeEmbed(member);
+                    await channel.send({
+                        content: welcomeText,
+                        embeds: [embed]
+                    }).catch(() => {});
+                }
+            }
+        }
+    } catch (e) {
+        console.warn('[Welcome Handler Notice]:', e.message);
+    }
+
+    // 3. Trigger Server Stats Counter Update (safely with cooldown)
+    updateGuildServerStats(guild).catch(() => {});
+});
+
+client.on('guildMemberRemove', async (member) => {
+    if (!member || !member.guild) return;
+    updateGuildServerStats(member.guild).catch(() => {});
+});
 
 // ==========================================
 // 💬 CHAT & MENTION AI TRIGGER
@@ -6442,6 +6909,105 @@ client.on('messageCreate', async (message) => {
             } else {
                 return message.reply(res.message || '⚠️ Could not complete setup.').catch(() => {});
             }
+        }
+
+        // Welcome System: !welcome, .welcome, !setwelcome
+        if (lower === '!welcome' || lower.startsWith('!welcome ') || lower === '!setwelcome' || lower.startsWith('!setwelcome ')) {
+            const parts = normalized.split(/\s+/);
+            const sub = (parts[1] || '').toLowerCase();
+            const targetChannel = message.mentions.channels.first();
+
+            if (sub === 'channel' || targetChannel || lower.startsWith('!setwelcome')) {
+                const ch = targetChannel || message.channel;
+                setGuildWelcomeSettings(message.guild.id, { channelId: ch.id, enabled: true });
+                return message.reply(`✅ Welcome channel set to <#${ch.id}>! New members will be greeted with sleek welcome cards. 🎉`).catch(() => {});
+            }
+
+            if (sub === 'test') {
+                await message.channel.sendTyping().catch(() => {});
+                const card = await generateWelcomeCard(message.member);
+                const settings = getGuildWelcomeSettings(message.guild.id);
+                const text = settings.messageText
+                    ? settings.messageText.replace('{user}', `<@${message.author.id}>`).replace('{count}', String(message.guild.memberCount))
+                    : `👋 Welcome <@${message.author.id}> to **${message.guild.name}**! Enjoy your stay! 🎉 *(Test Preview)*`;
+
+                if (card && card.buffer) {
+                    const attachment = new AttachmentBuilder(card.buffer, { name: card.filename });
+                    return message.reply({ content: text, files: [attachment] }).catch(() => {});
+                } else {
+                    const embed = buildWelcomeEmbed(message.member);
+                    return message.reply({ content: text, embeds: [embed] }).catch(() => {});
+                }
+            }
+
+            if (sub === 'off' || sub === 'disable') {
+                setGuildWelcomeSettings(message.guild.id, { enabled: false });
+                return message.reply('🔕 Welcome messages disabled.').catch(() => {});
+            }
+
+            const current = getGuildWelcomeSettings(message.guild.id);
+            const chStr = current.channelId ? `<#${current.channelId}>` : 'None (Auto-detecting #welcome)';
+            return message.reply(
+                `👋 **Welcome Settings:**\n` +
+                `• Current Channel: ${chStr}\n` +
+                `• Status: **${current.enabled !== false ? '✅ Enabled' : '🔕 Disabled'}**\n\n` +
+                `💡 **Commands:**\n` +
+                `• \`.welcome channel #channel\` — Set welcome channel\n` +
+                `• \`.welcome test\` — Test welcome card preview\n` +
+                `• \`.welcome off\` — Disable welcome messages`
+            ).catch(() => {});
+        }
+
+        // Auto-Role: !autorole @role, .autorole @role, !autorole off
+        if (lower === '!autorole' || lower.startsWith('!autorole ')) {
+            const parts = normalized.split(/\s+/);
+            const sub = (parts[1] || '').toLowerCase();
+            const targetRole = message.mentions.roles.first();
+
+            if (sub === 'off' || sub === 'disable') {
+                setGuildWelcomeSettings(message.guild.id, { autoRoleId: null });
+                return message.reply('🔕 Auto-Role has been disabled.').catch(() => {});
+            }
+
+            if (targetRole) {
+                const botMember = message.guild.members.me || await message.guild.members.fetch(client.user.id).catch(() => null);
+                if (botMember && targetRole.position >= botMember.roles.highest.position) {
+                    return message.reply(`⚠️ Warning: Role **${targetRole.name}** is higher than null's highest role. Move null's role above it in Server Settings → Roles so it can assign it!`).catch(() => {});
+                }
+                setGuildWelcomeSettings(message.guild.id, { autoRoleId: targetRole.id });
+                return message.reply(`✅ Auto-Role set to **${targetRole.name}**! New members will automatically receive this role upon joining. 🏷️`).catch(() => {});
+            }
+
+            const current = getGuildWelcomeSettings(message.guild.id);
+            const roleStr = current.autoRoleId ? `<@&${current.autoRoleId}>` : 'None';
+            return message.reply(`🏷️ **Auto-Role:** Current role: ${roleStr}. Use \`.autorole @role\` to configure or \`.autorole off\` to disable.`).catch(() => {});
+        }
+
+        // Server Stats: !serverstats setup, .serverstats setup, !serverstats update
+        if (lower === '!serverstats' || lower.startsWith('!serverstats ') || lower === '!stats' || lower.startsWith('!stats ')) {
+            const parts = normalized.split(/\s+/);
+            const sub = (parts[1] || '').toLowerCase();
+
+            if (sub === 'setup' || sub === 'create' || sub === 'start') {
+                await message.channel.sendTyping().catch(() => {});
+                const res = await setupGuildServerStats(message.guild);
+                if (res.embed) {
+                    return message.reply({ embeds: [res.embed] }).catch(() => {});
+                } else {
+                    return message.reply(res.message || '⚠️ Error setting up server stats.').catch(() => {});
+                }
+            }
+
+            if (sub === 'update' || sub === 'refresh') {
+                await updateGuildServerStats(message.guild, true);
+                return message.reply('✅ Server stats counters updated successfully!').catch(() => {});
+            }
+
+            return message.reply(
+                `📊 **Server Stats Live Counters:**\n` +
+                `• \`.serverstats setup\` — Automatically create the \`📊 SERVER STATS\` category and live counters!\n` +
+                `• \`.serverstats update\` — Force counter update`
+            ).catch(() => {});
         }
 
         // Help command: !help / !commands
@@ -7718,6 +8284,115 @@ client.on('interactionCreate', async (interaction) => {
                 }
             } catch (err) {
                 return await interaction.editReply({ content: '⚠️ Error running channel setup: ' + err.message });
+            }
+        }
+    }
+
+    // --- /welcome ---
+    if (commandName === 'welcome') {
+        if (!interaction.guild) {
+            return interaction.reply({ content: '❌ This command can only be used in a server!', ephemeral: true });
+        }
+        const sub = interaction.options.getSubcommand();
+
+        if (sub === 'channel') {
+            const channel = interaction.options.getChannel('target');
+            if (!channel || !channel.isTextBased() || channel.isVoiceBased()) {
+                return interaction.reply({ content: '❌ Please select a valid text channel!', ephemeral: true });
+            }
+            setGuildWelcomeSettings(interaction.guildId, { channelId: channel.id, enabled: true });
+            return interaction.reply({
+                content: `✅ Welcome channel set to <#${channel.id}>! New members will be greeted with sleek welcome cards. 🎉`
+            });
+        }
+
+        if (sub === 'test') {
+            await interaction.deferReply();
+            try {
+                const member = interaction.member;
+                const card = await generateWelcomeCard(member);
+                const settings = getGuildWelcomeSettings(interaction.guildId);
+                const text = settings.messageText
+                    ? settings.messageText.replace('{user}', `<@${member.id}>`).replace('{count}', String(interaction.guild.memberCount))
+                    : `👋 Welcome <@${member.id}> to **${interaction.guild.name}**! Enjoy your stay! 🎉 *(Test Preview)*`;
+
+                if (card && card.buffer) {
+                    const attachment = new AttachmentBuilder(card.buffer, { name: card.filename });
+                    return await interaction.editReply({ content: text, files: [attachment] });
+                } else {
+                    const embed = buildWelcomeEmbed(member);
+                    return await interaction.editReply({ content: text, embeds: [embed] });
+                }
+            } catch (err) {
+                return await interaction.editReply({ content: '⚠️ Error generating welcome test: ' + err.message });
+            }
+        }
+
+        if (sub === 'disable') {
+            setGuildWelcomeSettings(interaction.guildId, { enabled: false });
+            return interaction.reply({ content: '🔕 Welcome messages have been disabled for this server.' });
+        }
+    }
+
+    // --- /autorole ---
+    if (commandName === 'autorole') {
+        if (!interaction.guild) {
+            return interaction.reply({ content: '❌ This command can only be used in a server!', ephemeral: true });
+        }
+        const sub = interaction.options.getSubcommand();
+
+        if (sub === 'set') {
+            const role = interaction.options.getRole('role');
+            if (!role) return interaction.reply({ content: '❌ Please select a valid role!', ephemeral: true });
+
+            const botMember = interaction.guild.members.me || await interaction.guild.members.fetch(client.user.id).catch(() => null);
+            if (botMember && role.position >= botMember.roles.highest.position) {
+                return interaction.reply({
+                    content: `⚠️ Warning: The role **${role.name}** is higher than or equal to null's highest role. Move null's role above it in Server Settings → Roles so it can assign it!`,
+                    ephemeral: true
+                });
+            }
+
+            setGuildWelcomeSettings(interaction.guildId, { autoRoleId: role.id });
+            return interaction.reply({
+                content: `✅ Auto-Role configured! New members will automatically receive **${role.name}** upon joining. 🏷️`
+            });
+        }
+
+        if (sub === 'disable') {
+            setGuildWelcomeSettings(interaction.guildId, { autoRoleId: null });
+            return interaction.reply({ content: '🔕 Auto-Role has been disabled.' });
+        }
+    }
+
+    // --- /serverstats ---
+    if (commandName === 'serverstats') {
+        if (!interaction.guild) {
+            return interaction.reply({ content: '❌ This command can only be used in a server!', ephemeral: true });
+        }
+        const sub = interaction.options.getSubcommand();
+
+        if (sub === 'setup') {
+            await interaction.deferReply();
+            try {
+                const res = await setupGuildServerStats(interaction.guild);
+                if (res.embed) {
+                    return await interaction.editReply({ embeds: [res.embed] });
+                } else {
+                    return await interaction.editReply({ content: res.message || '⚠️ Server stats setup error.' });
+                }
+            } catch (err) {
+                return await interaction.editReply({ content: '⚠️ Error creating server stats: ' + err.message });
+            }
+        }
+
+        if (sub === 'update') {
+            await interaction.deferReply({ ephemeral: true });
+            try {
+                await updateGuildServerStats(interaction.guild, true);
+                return await interaction.editReply({ content: '✅ Server stats counters updated successfully!' });
+            } catch (err) {
+                return await interaction.editReply({ content: '⚠️ Update notice: ' + err.message });
             }
         }
     }
