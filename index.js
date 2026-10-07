@@ -1989,6 +1989,30 @@ function getOrCreateUser(guildId, userId, username = 'Unknown') {
     return levelsCache[key];
 }
 
+// Guild settings helper for level-up notifications
+// Default mode is 'silent': zero voice channel spam, zero ping sound, points credited silently
+function getGuildLevelNotify(guildId) {
+    const key = `guild_settings_${guildId}`;
+    if (!levelsCache[key]) {
+        levelsCache[key] = {
+            mode: 'silent', // 'silent' (default), 'channel', 'off'
+            channelId: null
+        };
+    }
+    return levelsCache[key];
+}
+
+function setGuildLevelNotify(guildId, mode, channelId = null) {
+    const key = `guild_settings_${guildId}`;
+    levelsCache[key] = {
+        mode: mode || 'silent',
+        channelId: channelId || null
+    };
+    levelsDirty = true;
+    saveLevels();
+    return levelsCache[key];
+}
+
 // Arcade / Arcane leveling formula:
 // XP needed to advance from level L to L+1: 5 * L^2 + 50 * L + 100
 function getXpForNextLevel(level) {
@@ -2090,11 +2114,22 @@ function trackMessageForLeveling(message) {
         if (newLevel > oldLevel) {
             const bonusPoints = newLevel * 50; // Bonus points on level up
             user.points = (user.points || 0) + bonusPoints;
+            user.recentLevelUp = newLevel;
             saveLevels(); // Save immediately on milestone level up
 
-            message.channel.send({
-                content: `🎉 **Level Up!** <@${message.author.id}>, you advanced to **Level ${newLevel}** and received **+${bonusPoints} Points**! ⭐🪙`
-            }).catch(() => {});
+            const notifySetting = getGuildLevelNotify(message.guild.id);
+            if (notifySetting.mode !== 'off') {
+                const targetChannel = (notifySetting.mode === 'channel' && notifySetting.channelId)
+                    ? (message.guild.channels.cache.get(notifySetting.channelId) || message.channel)
+                    : message.channel;
+
+                if (targetChannel && targetChannel.send) {
+                    targetChannel.send({
+                        content: `🎉 **Level Up!** <@${message.author.id}>, you advanced to **Level ${newLevel}** and received **+${bonusPoints} Points**! ⭐🪙`,
+                        allowedMentions: { users: [] } // Suppress ping sound/chime in chat
+                    }).catch(() => {});
+                }
+            }
         }
     } else {
         levelsDirty = true;
@@ -2161,12 +2196,19 @@ setInterval(() => {
                     if (newLevel > oldLevel) {
                         const bonusPoints = newLevel * 50;
                         user.points = (user.points || 0) + bonusPoints;
+                        user.recentLevelUp = newLevel;
+                        anyChanged = true;
 
-                        const channel = guild.channels.cache.get(vs.channelId);
-                        if (channel && channel.send) {
-                            channel.send({
-                                content: `🎉 **Level Up!** <@${userId}>, your time in call elevated you to **Level ${newLevel}** (+${bonusPoints} Points)! ⭐🪙`
-                            }).catch(() => {});
+                        // NEVER post into the voice channel (vs.channelId)! Keeps voice calls quiet and ping-free!
+                        const notifySetting = getGuildLevelNotify(guildId);
+                        if (notifySetting.mode === 'channel' && notifySetting.channelId) {
+                            const textChannel = guild.channels.cache.get(notifySetting.channelId);
+                            if (textChannel && textChannel.isTextBased() && !textChannel.isVoiceBased()) {
+                                textChannel.send({
+                                    content: `🎉 **Level Up!** Congratulations to **${username}** on advancing to **Level ${newLevel}** (+${bonusPoints} Points)! ⭐🪙`,
+                                    allowedMentions: { users: [] } // Zero sound / zero ping chime!
+                                }).catch(() => {});
+                            }
                         }
                     }
                 }
@@ -2602,7 +2644,9 @@ function createRankCardEmbed(member, userData) {
         .setColor(0x2BB6A6)
         .setThumbnail(member.user.displayAvatarURL({ dynamic: true, size: 256 }));
 
-    if (userData.customText) {
+    if (userData.recentLevelUp) {
+        embed.setDescription(`🎉 **Recent Milestone:** Advanced to **Level ${userData.recentLevelUp}** (+${userData.recentLevelUp * 50} Points awarded)! ⭐${userData.customText ? `\n\n💬 *“${userData.customText}”*` : ''}`);
+    } else if (userData.customText) {
         embed.setDescription(`💬 *“${userData.customText}”*`);
     }
 
@@ -3950,7 +3994,7 @@ function createHelpEmbed() {
         .setDescription('Ultra-lightweight, 24/7 high-fidelity music bot with interactive buttons, arcade leveling, casino minigames, and an AI brain.')
         .setColor(0x5865F2)
         .addFields(
-            { name: '🏆 Leveling & Rank (Arcade System)', value: '`/rank [user]` (or `!rank`) — Check rank card (Level, XP, texts sent, call time, points)\n`/setbio <text>` (or `!bio <text>`) — Set a custom tagline/quote on your rank card!\n`/badges [user]` (or `!badges`) — View unlocked achievements & badges!\n`/leaderboard [type]` (or `!top`) — Server leaderboard (Top 10 by XP or Points)' },
+            { name: '🏆 Leveling & Rank (Arcade System)', value: '`/rank [user]` (or `!rank`) — Check rank card (Level, XP, texts sent, call time, points)\n`/setbio <text>` (or `!bio <text>`) — Set a custom tagline/quote on your rank card!\n`/badges [user]` (or `!badges`) — View unlocked achievements & badges!\n`/leaderboard [type]` (or `!top`) — Server leaderboard (Top 10 by XP or Points)\n`/levelnotify [mode]` (or `!levelnotify`) — Level notifications (Silent in calls, channel, or off)' },
             { name: '🪙 Economy, Mega Shop & Vanity', value: '`/shop [category]` (or `!shop`) — Mega shop with tabs: Themes, Roles, Perks & Badges!\n`/buyrole <role>` (or `!buyrole`) — Purchase preset glowing color roles!\n`/customrole <name> [color]` (or `!customrole`) — Create your own personalized vanity role!\n`/buyperk <shield|booster>` — Daily streak shield (350 pts) or 2x XP/Points booster for 24h (500 pts)!\n`/buybadge <badge>` — Unlock rare prestige badges for your `/rank` profile card!\n`/preview <theme>` & `/buy <theme>` & `/equip <theme>` — Card themes shop (from Minimal to GIF Loops)\n`/daily` (or `!daily`) — Claim daily reward with streak multiplier & shield protection!\n`/points [user]` (or `!points`) — View wallet, shields, active boosters, and inventory\n`/pay <user> <amount>` / `/transfer` — Transfer coins/points to another member!' },
             { name: '🎰 Casino & Gambling Minigames', value: '`/coinflip <amount> <heads/tails>` (or `!cf`) — 50/50 double-or-nothing coinflip!\n`/slots <amount>` (or `!slots`) — Spin slot reels for up to 25x Lucky 7 jackpot!\n`/blackjack <amount>` (or `!bj`) — Interactive blackjack table against dealer with buttons (Hit, Stand, Double)!' },
             { name: '🎮 Arcade Minigames', value: '`/hangman [category]` (or `!hangman`) — Interactive Hangman game with real words & ASCII art!\n• Type single letters in chat (e.g. `e`, `a`) or full words to guess!\n• Earn points & XP for finding letters and winning!\n`/hangman-stop` (or `!forfeit`) — Forfeit active game' },
@@ -4673,6 +4717,24 @@ const slashCommands = [
                     { name: 'Hugging Face (FLUX.1-schnell)', value: 'huggingface' },
                     { name: 'Picsart GenAI', value: 'picsart' }
                 )
+        ),
+    new SlashCommandBuilder()
+        .setName('levelnotify')
+        .setDescription('Configure level-up notifications (e.g. silent in calls, or specific text channel)')
+        .addStringOption(option =>
+            option.setName('mode')
+                .setDescription('Notification mode for level ups')
+                .setRequired(false)
+                .addChoices(
+                    { name: 'Silent in Voice Calls (Default - No noise or voice pings)', value: 'silent' },
+                    { name: 'Dedicated Text Channel (Quietly post to a channel)', value: 'channel' },
+                    { name: 'Completely Disabled (No notifications)', value: 'off' }
+                )
+        )
+        .addChannelOption(option =>
+            option.setName('channel')
+                .setDescription('Target text channel for level ups (when mode is Dedicated Text Channel)')
+                .setRequired(false)
         )
 ];
 
@@ -5026,6 +5088,44 @@ client.on('messageCreate', async (message) => {
                     content: `⚠️ שגיאה ביצירת התמונה: \`${err.message}\``
                 }).catch(() => {});
             }
+        }
+
+        // Level notification settings: !levelnotify [silent|channel|off]
+        if (lower === '!levelnotify' || lower.startsWith('!levelnotify ')) {
+            const parts = normalized.split(/\s+/);
+            const arg = (parts[1] || '').toLowerCase();
+            const targetChannel = message.mentions.channels.first();
+
+            if (!arg) {
+                const current = getGuildLevelNotify(message.guild.id);
+                const channelStr = current.channelId ? `<#${current.channelId}>` : 'None';
+                const embed = new EmbedBuilder()
+                    .setTitle('⚙️ Level-Up Notification Settings')
+                    .setColor(0x2BB6A6)
+                    .setDescription(
+                        `Current Mode: **${current.mode === 'silent' ? '🔇 Silent in Voice Calls (Default)' : current.mode === 'channel' ? '📢 Dedicated Text Channel' : '🔕 Disabled'}**\n` +
+                        `Announcement Channel: ${channelStr}\n\n` +
+                        `💡 **Usage:**\n` +
+                        `• \`.levelnotify silent\` — Level up silently in calls with 0 voice chat noise or pings!\n` +
+                        `• \`.levelnotify channel #channel\` — Post quietly to a specific text channel\n` +
+                        `• \`.levelnotify off\` — Turn off all level up messages`
+                    );
+                return message.reply({ embeds: [embed] }).catch(() => {});
+            }
+
+            let newMode = 'silent';
+            let newChannelId = null;
+            if (arg === 'off' || arg === 'disable' || arg === 'disabled') {
+                newMode = 'off';
+            } else if (arg === 'channel' || targetChannel) {
+                newMode = 'channel';
+                newChannelId = targetChannel ? targetChannel.id : message.channel.id;
+            } else {
+                newMode = 'silent';
+            }
+
+            setGuildLevelNotify(message.guild.id, newMode, newChannelId);
+            return message.reply(`✅ Level-up notification mode set to **${newMode === 'silent' ? '🔇 Silent in Voice Calls' : newMode === 'channel' ? `📢 Dedicated Channel (<#${newChannelId}>)` : '🔕 Disabled'}**! Voice calls will remain quiet and ping-free. ✨`).catch(() => {});
         }
 
         // Lyrics command: !lyrics [song] (or .lyrics)
@@ -6051,6 +6151,42 @@ client.on('interactionCreate', async (interaction) => {
                 content: `⚠️ **שגיאה ביצירת התמונה:** \`${err.message}\`\n\n💡 *טיפ:* בדוק שהמפתחות שלך ב-\`.env\` פעילים (כגון \`STABILITY_API_KEY\` או \`AI_HORDE_API_KEY\`), או נסה שוב!`
             });
         }
+    }
+
+    // --- /levelnotify ---
+    if (commandName === 'levelnotify') {
+        if (!interaction.guild) {
+            return interaction.reply({ content: '❌ This command can only be used inside a server!', ephemeral: true });
+        }
+        const mode = interaction.options.getString('mode');
+        const channel = interaction.options.getChannel('channel');
+
+        if (!mode && !channel) {
+            const current = getGuildLevelNotify(interaction.guildId);
+            const channelStr = current.channelId ? `<#${current.channelId}>` : 'None';
+            return interaction.reply({
+                embeds: [
+                    new EmbedBuilder()
+                        .setTitle('⚙️ Level-Up Notification Settings')
+                        .setColor(0x2BB6A6)
+                        .setDescription(
+                            `Current Mode: **${current.mode === 'silent' ? '🔇 Silent in Voice Calls (Default)' : current.mode === 'channel' ? '📢 Dedicated Text Channel' : '🔕 Disabled'}**\n` +
+                            `Announcement Channel: ${channelStr}\n\n` +
+                            `💡 **Tip:** In **Silent** mode, members level up in voice calls without any annoying messages or ping sounds. Check \`/rank\` anytime to see milestone levels!`
+                        )
+                ],
+                ephemeral: true
+            });
+        }
+
+        const newMode = mode || (channel ? 'channel' : 'silent');
+        const newChannelId = channel ? channel.id : (newMode === 'channel' ? interaction.channelId : null);
+        setGuildLevelNotify(interaction.guildId, newMode, newChannelId);
+
+        return interaction.reply({
+            content: `✅ Level-up notification mode updated to: **${newMode === 'silent' ? '🔇 Silent in Voice Calls' : newMode === 'channel' ? `📢 Dedicated Channel (<#${newChannelId}>)` : '🔕 Disabled'}**!\nVoice calls will remain peaceful and ping-free. ✨`,
+            ephemeral: true
+        });
     }
 });
 
