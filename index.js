@@ -2695,6 +2695,223 @@ async function setupGuildServerStats(guild) {
 }
 
 // ==========================================
+// 📩 TICKET SYSTEM ENGINE
+// ==========================================
+
+function getGuildTicketSettings(guildId) {
+    const key = `guild_tickets_${guildId}`;
+    return levelsCache[key] || { panelChannelId: null, supportRoleId: null, categoryId: null, ticketCount: 0 };
+}
+
+function setGuildTicketSettings(guildId, settings) {
+    const key = `guild_tickets_${guildId}`;
+    levelsCache[key] = { ...(levelsCache[key] || {}), ...settings };
+    levelsDirty = true;
+    saveLevels();
+}
+
+function buildTicketPanelEmbed() {
+    return new EmbedBuilder()
+        .setTitle('📩 פניות להנהלה ותמיכה • Support Tickets')
+        .setDescription(
+            'צריך עזרה, יש לך שאלה, או שאתה רוצה לדווח על בעיה או משתמש?\n' +
+            'לחץ על הכפתור למטה כדי לפתוח כרטיס פנייה פרטי מול צוות ההנהלה!\n\n' +
+            'Need support, have a question, or want to report an issue?\n' +
+            'Click the button below to open a private ticket with staff!'
+        )
+        .setColor(0x5865F2)
+        .setFooter({ text: 'null Bot • מערכת פניות ותמיכה' });
+}
+
+function buildTicketPanelRow() {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('ticket_open')
+            .setLabel('📩 פתח פנייה / Open Ticket')
+            .setStyle(ButtonStyle.Primary)
+    );
+}
+
+async function handleCreateTicket(interaction) {
+    if (!interaction.guild) return;
+
+    // Check if user already has an active open ticket in this server
+    const existingTicket = interaction.guild.channels.cache.find(c =>
+        c.isTextBased() && c.topic && c.topic.includes(`ticket_owner_${interaction.user.id}`)
+    );
+    if (existingTicket) {
+        return interaction.reply({
+            content: `⚠️ כבר יש לך פנייה פתוחה בשרת: <#${existingTicket.id}>\nאנא פנה לשם או סגור אותה לפני שתוכל לפתוח פנייה חדשה!`,
+            ephemeral: true
+        });
+    }
+
+    const botMember = interaction.guild.members.me || await interaction.guild.members.fetch(client.user.id).catch(() => null);
+    if (!botMember || !botMember.permissions.has(PermissionsBitField.Flags.ManageChannels)) {
+        return interaction.reply({
+            content: '❌ לבוט אין הרשאת `Manage Channels` (ניהול ערוצים) כדי ליצור ערוץ פנייה פרטי!',
+            ephemeral: true
+        });
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+
+    try {
+        const settings = getGuildTicketSettings(interaction.guildId);
+        const ticketNum = (settings.ticketCount || 0) + 1;
+        setGuildTicketSettings(interaction.guildId, { ticketCount: ticketNum });
+
+        // Find or create Tickets category
+        let category = settings.categoryId ? interaction.guild.channels.cache.get(settings.categoryId) : null;
+        if (!category) {
+            category = interaction.guild.channels.cache.find(c => c.type === ChannelType.GuildCategory && /^(tickets|פניות)$/i.test(c.name));
+            if (!category) {
+                category = await interaction.guild.channels.create({
+                    name: '📩 TICKETS',
+                    type: ChannelType.GuildCategory
+                }).catch(() => null);
+                if (category) {
+                    setGuildTicketSettings(interaction.guildId, { categoryId: category.id });
+                }
+            }
+        }
+
+        // Permission Overwrites
+        const permissionOverwrites = [
+            {
+                id: interaction.guild.roles.everyone.id,
+                deny: [PermissionsBitField.Flags.ViewChannel]
+            },
+            {
+                id: interaction.user.id,
+                allow: [
+                    PermissionsBitField.Flags.ViewChannel,
+                    PermissionsBitField.Flags.SendMessages,
+                    PermissionsBitField.Flags.AttachFiles,
+                    PermissionsBitField.Flags.ReadMessageHistory,
+                    PermissionsBitField.Flags.EmbedLinks
+                ]
+            },
+            {
+                id: client.user.id,
+                allow: [
+                    PermissionsBitField.Flags.ViewChannel,
+                    PermissionsBitField.Flags.SendMessages,
+                    PermissionsBitField.Flags.ManageChannels,
+                    PermissionsBitField.Flags.ReadMessageHistory,
+                    PermissionsBitField.Flags.EmbedLinks
+                ]
+            }
+        ];
+
+        // Add Support Role permissions if configured
+        if (settings.supportRoleId) {
+            const supportRole = interaction.guild.roles.cache.get(settings.supportRoleId);
+            if (supportRole) {
+                permissionOverwrites.push({
+                    id: supportRole.id,
+                    allow: [
+                        PermissionsBitField.Flags.ViewChannel,
+                        PermissionsBitField.Flags.SendMessages,
+                        PermissionsBitField.Flags.AttachFiles,
+                        PermissionsBitField.Flags.ReadMessageHistory,
+                        PermissionsBitField.Flags.EmbedLinks
+                    ]
+                });
+            }
+        }
+
+        const safeUsername = interaction.user.username.toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 15) || 'user';
+        const channelName = `ticket-${safeUsername}-${ticketNum}`;
+
+        const ticketChannel = await interaction.guild.channels.create({
+            name: channelName,
+            type: ChannelType.GuildText,
+            topic: `ticket_owner_${interaction.user.id} | Ticket #${ticketNum} for ${interaction.user.tag}`,
+            parent: category ? category.id : null,
+            permissionOverwrites
+        });
+
+        const welcomeEmbed = new EmbedBuilder()
+            .setTitle(`📩 פנייה #${ticketNum} • Ticket #${ticketNum}`)
+            .setDescription(
+                `שלום <@${interaction.user.id}>!\nתודה שפנית להנהלה. אנא פרט כאן את שאלתך, הבעיה או בקשתך ונציג צוות יענה לך בהקדם!\n\n` +
+                `Hello <@${interaction.user.id}>!\nPlease describe your issue or question below. Staff will assist you shortly.`
+            )
+            .setColor(0x2BB6A6)
+            .setTimestamp();
+
+        const closeRow = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId('ticket_close_request')
+                .setLabel('🔒 סגור פנייה / Close Ticket')
+                .setStyle(ButtonStyle.Danger)
+        );
+
+        const pingContent = settings.supportRoleId
+            ? `<@${interaction.user.id}> • <@&${settings.supportRoleId}>`
+            : `<@${interaction.user.id}>`;
+
+        await ticketChannel.send({
+            content: pingContent,
+            embeds: [welcomeEmbed],
+            components: [closeRow]
+        }).catch(() => {});
+
+        return await interaction.editReply({
+            content: `✅ הפנייה שלך נפתחה בהצלחה! לחץ כאן למעבר: <#${ticketChannel.id}>`
+        });
+    } catch (err) {
+        console.error('[Create Ticket Error]:', err);
+        return await interaction.editReply({
+            content: `⚠️ שגיאה בפתיחת הפנייה: \`${err.message}\``
+        });
+    }
+}
+
+async function handleCloseTicketRequest(target) {
+    const channel = target.channel;
+    const isInteraction = typeof target.isButton === 'function' || typeof target.isCommand === 'function' || target.commandName !== undefined;
+    if (!channel || !channel.isTextBased() || !channel.topic?.includes('ticket_owner_')) {
+        const payload = { content: '❌ ניתן להשתמש בפקודה זו רק בתוך ערוץ פנייה (Ticket)!' };
+        if (isInteraction) payload.ephemeral = true;
+        return target.reply(payload).catch(() => {});
+    }
+
+    const confirmRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('ticket_close_confirm')
+            .setLabel('✅ כן, סגור ומחק את הפנייה')
+            .setStyle(ButtonStyle.Danger),
+        new ButtonBuilder()
+            .setCustomId('ticket_close_cancel')
+            .setLabel('❌ ביטול')
+            .setStyle(ButtonStyle.Secondary)
+    );
+
+    return target.reply({
+        content: `⚠️ **האם אתה בטוח שברצונך לסגור פנייה זו?**\nהערוץ וההיסטוריה שלו יימחקו לצמיתות.`,
+        components: [confirmRow]
+    }).catch(() => {});
+}
+
+async function handleCloseTicketConfirm(interaction) {
+    const channel = interaction.channel;
+    if (!channel || !channel.isTextBased() || !channel.topic?.includes('ticket_owner_')) {
+        return interaction.reply({ content: '❌ ערוץ פנייה לא נמצא.', ephemeral: true });
+    }
+
+    await interaction.update({
+        content: `🔒 **הפנייה נסגרה על ידי <@${interaction.user.id}>.**\nהערוץ יימחק אוטומטית תוך 5 שניות...`,
+        components: []
+    }).catch(() => {});
+
+    setTimeout(() => {
+        channel.delete(`Ticket closed by ${interaction.user.tag}`).catch(() => {});
+    }, 5000);
+}
+
+// ==========================================
 // 🎵 MUSIC HELPERS & CONTROLS
 // ==========================================
 
@@ -5324,6 +5541,7 @@ function createHelpEmbed() {
             { name: '📜 Queue & Audio', value: '`/nowplaying` — Live song display with progress bar & buttons\n`/queue` — Show upcoming songs\n`/shuffle` — Shuffle the queue\n`/volume <1-100>` — Change playback volume' },
             { name: '👋 Welcome & Auto-Role', value: '`/welcome channel #channel` (or `.welcome channel #ch`) — Greet new members with sleek custom cards!\n`/welcome test` (or `.welcome test`) — Preview welcome card in chat\n`/autorole set @role` (or `.autorole @role`) — Give role automatically to new joins' },
             { name: '📊 Server Stats Counters', value: '`/serverstats setup` (or `.serverstats setup`) — Auto-create live locked voice counters (`👥 Members`, `🎙️ In Voice`)!\n`/serverstats update` — Force live counters refresh' },
+            { name: '📩 Ticket System (מערכת פניות)', value: '`/tickets setup` (or `.tickets setup`) — Deploy the private support ticket panel with button!\n`/ticket close` (or `.close`) — Close and delete an active ticket channel' },
             { name: '⚙️ Utilities', value: '`/null` — Bot status, memory diagnostics & AI brain info\n`/ping` — Check latency\n`/help` (or `!help`) — Display this guide' }
         )
         .setFooter({ text: 'null Music • Interactive Controls Available on Playback' });
@@ -6227,6 +6445,30 @@ const slashCommands = [
         .addSubcommand(sub =>
             sub.setName('update')
                 .setDescription('Force an immediate counter update (subject to Discord 6-min cooldown)')
+        ),
+    new SlashCommandBuilder()
+        .setName('tickets')
+        .setDescription('📩 Tickets: Support and staff ticket system with private channels')
+        .addSubcommand(sub =>
+            sub.setName('setup')
+                .setDescription('Set up and post the ticket creation panel with Open Ticket button')
+                .addChannelOption(opt =>
+                    opt.setName('channel')
+                        .setDescription('Text channel to post the ticket panel to (defaults to current channel)')
+                        .setRequired(false)
+                )
+                .addRoleOption(opt =>
+                    opt.setName('support_role')
+                        .setDescription('Role that will have permission to view and answer tickets')
+                        .setRequired(false)
+                )
+        ),
+    new SlashCommandBuilder()
+        .setName('ticket')
+        .setDescription('🔒 Ticket management commands')
+        .addSubcommand(sub =>
+            sub.setName('close')
+                .setDescription('Close and delete the current ticket channel')
         )
 ];
 
@@ -7010,6 +7252,48 @@ client.on('messageCreate', async (message) => {
             ).catch(() => {});
         }
 
+        // Ticket System: !tickets setup, .tickets setup, !ticket close, .close, !close
+        if (lower === '!tickets' || lower.startsWith('!tickets ') || lower === '!ticket' || lower.startsWith('!ticket ') || lower === '!close') {
+            const parts = normalized.split(/\s+/);
+            const sub = (parts[1] || '').toLowerCase();
+
+            if (lower === '!close' || sub === 'close') {
+                return handleCloseTicketRequest(message);
+            }
+
+            if (sub === 'setup' || sub === 'panel') {
+                const botMember = message.guild.members.me || await message.guild.members.fetch(client.user.id).catch(() => null);
+                if (!botMember || !botMember.permissions.has(PermissionsBitField.Flags.ManageChannels)) {
+                    return message.reply('❌ null needs the **Manage Channels** permission to create private ticket channels!').catch(() => {});
+                }
+
+                if (!message.member.permissions.has(PermissionsBitField.Flags.ManageChannels) && !message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+                    return message.reply('❌ You need the **Manage Channels** or **Administrator** permission to set up the ticket panel!').catch(() => {});
+                }
+
+                const targetChannel = message.mentions.channels.first() || message.channel;
+                const supportRole = message.mentions.roles.first() || null;
+
+                setGuildTicketSettings(message.guild.id, {
+                    panelChannelId: targetChannel.id,
+                    supportRoleId: supportRole ? supportRole.id : null
+                });
+
+                const embed = buildTicketPanelEmbed();
+                const row = buildTicketPanelRow();
+
+                await targetChannel.send({ embeds: [embed], components: [row] }).catch(() => {});
+
+                return message.reply(`✅ Ticket panel successfully deployed to <#${targetChannel.id}>!${supportRole ? ` Support role: <@&${supportRole.id}>` : ''}`).catch(() => {});
+            }
+
+            return message.reply(
+                `📩 **Ticket System (מערכת פניות):**\n` +
+                `• \`.tickets setup\` (or \`!tickets setup [#channel] [@role]\`) — Deploy the ticket creation panel with the "Open Ticket" button!\n` +
+                `• \`.close\` (or \`!ticket close\`) — Close and delete an active ticket channel.`
+            ).catch(() => {});
+        }
+
         // Help command: !help / !commands
         if (lower === '!help' || lower === '!commands') {
             const embed = createHelpEmbed();
@@ -7241,6 +7525,26 @@ client.on('interactionCreate', async (interaction) => {
 
     // 2. Button Controls
     if (interaction.isButton()) {
+        // Ticket System Buttons
+        if (interaction.customId === 'ticket_open') {
+            return handleCreateTicket(interaction);
+        }
+
+        if (interaction.customId === 'ticket_close_request') {
+            return handleCloseTicketRequest(interaction);
+        }
+
+        if (interaction.customId === 'ticket_close_confirm') {
+            return handleCloseTicketConfirm(interaction);
+        }
+
+        if (interaction.customId === 'ticket_close_cancel') {
+            return interaction.update({
+                content: '✅ ביטול סגירת הפנייה. הפנייה נשארת פתוחה.',
+                components: []
+            });
+        }
+
         // Image Generation Regenerate Button
         if (interaction.customId.startsWith('regen_imagine_')) {
             const cacheKey = interaction.customId.replace('regen_imagine_', '');
@@ -8394,6 +8698,54 @@ client.on('interactionCreate', async (interaction) => {
             } catch (err) {
                 return await interaction.editReply({ content: '⚠️ Update notice: ' + err.message });
             }
+        }
+    }
+
+    // --- /tickets ---
+    if (commandName === 'tickets') {
+        if (!interaction.guild) {
+            return interaction.reply({ content: '❌ This command can only be used in a server!', ephemeral: true });
+        }
+        const sub = interaction.options.getSubcommand();
+
+        if (sub === 'setup') {
+            const botMember = interaction.guild.members.me || await interaction.guild.members.fetch(client.user.id).catch(() => null);
+            if (!botMember || !botMember.permissions.has(PermissionsBitField.Flags.ManageChannels)) {
+                return interaction.reply({
+                    content: '❌ null needs the **Manage Channels** permission to create private ticket channels!',
+                    ephemeral: true
+                });
+            }
+
+            const targetChannel = interaction.options.getChannel('channel') || interaction.channel;
+            const supportRole = interaction.options.getRole('support_role');
+
+            if (!targetChannel || !targetChannel.isTextBased() || targetChannel.isVoiceBased()) {
+                return interaction.reply({ content: '❌ Please select a valid text channel for the ticket panel!', ephemeral: true });
+            }
+
+            setGuildTicketSettings(interaction.guildId, {
+                panelChannelId: targetChannel.id,
+                supportRoleId: supportRole ? supportRole.id : null
+            });
+
+            const embed = buildTicketPanelEmbed();
+            const row = buildTicketPanelRow();
+
+            await targetChannel.send({ embeds: [embed], components: [row] }).catch(() => {});
+
+            return interaction.reply({
+                content: `✅ Ticket panel successfully deployed to <#${targetChannel.id}>!${supportRole ? ` Support role: <@&${supportRole.id}>` : ''}`,
+                ephemeral: true
+            });
+        }
+    }
+
+    // --- /ticket ---
+    if (commandName === 'ticket') {
+        const sub = interaction.options.getSubcommand();
+        if (sub === 'close') {
+            return handleCloseTicketRequest(interaction);
         }
     }
 });
