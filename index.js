@@ -1378,6 +1378,381 @@ function buildImageReplyPayload(genRes, user, durationSec, aspectRatio = '1:1') 
 }
 
 // ==========================================
+// 🥊 UFC & MMA HUB ENGINE
+// (Live Rankings, Upcoming Fight Cards, News & WatchMMAFull Links)
+// ==========================================
+
+let ufcRankingsCache = { data: null, timestamp: 0 };
+let ufcEventsCache = { data: null, timestamp: 0 };
+let ufcNewsCache = { data: null, timestamp: 0 };
+const postedUFCArticleIds = new Set();
+const postedUFCEventTitles = new Set();
+
+// 1. Fetch official real-time UFC Rankings
+async function fetchUFCRankings(force = false) {
+    const now = Date.now();
+    if (!force && ufcRankingsCache.data && (now - ufcRankingsCache.timestamp < 60 * 60 * 1000)) {
+        return ufcRankingsCache.data;
+    }
+
+    try {
+        const res = await fetch('https://www.ufc.com/rankings', {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+            signal: AbortSignal.timeout(12000)
+        });
+        if (!res.ok) throw new Error(`UFC.com status ${res.status}`);
+        const html = await res.text();
+        const groupings = html.split('<div class="view-grouping">');
+        const divisions = [];
+
+        for (let i = 1; i < groupings.length; i++) {
+            const group = groupings[i];
+            const headerMatch = group.match(/<div class="view-grouping-header">([\s\S]*?)<\/div>/);
+            if (!headerMatch) continue;
+            let divisionName = headerMatch[1].replace(/<[^>]+>/g, '').replace(/Top Rank/g, '').replace(/&#039;/g, "'").trim();
+
+            const champMatch = group.match(/<div class="info">[\s\S]*?<a[^>]*>([^<]+)<\/a>/i);
+            const champImgMatch = group.match(/<img[^>]*src="([^"]+)"/i);
+            const champion = champMatch ? champMatch[1].trim() : 'Vacant';
+            const champImage = champImgMatch ? champImgMatch[1] : null;
+
+            const fighters = [];
+            const rows = group.matchAll(/<td class="views-field views-field-weight-class-rank">([\s\S]*?)<\/td>[\s\S]*?<td class="views-field views-field-title"><a[^>]*>([\s\S]*?)<\/a>/g);
+            for (const r of rows) {
+                const rankNum = r[1].replace(/<[^>]+>/g, '').trim();
+                const name = r[2].replace(/<[^>]+>/g, '').trim();
+                if (rankNum && name) {
+                    fighters.push({ rank: rankNum, name });
+                }
+            }
+
+            if (divisionName && (champion !== 'Vacant' || fighters.length > 0)) {
+                if (!divisions.some(d => d.name === divisionName)) {
+                    divisions.push({
+                        name: divisionName,
+                        champion,
+                        champImage,
+                        fighters: fighters.slice(0, 15)
+                    });
+                }
+            }
+        }
+
+        if (divisions.length > 0) {
+            ufcRankingsCache = { data: divisions, timestamp: now };
+            return divisions;
+        }
+    } catch (e) {
+        console.warn('[UFC Rankings] Fetch notice:', e.message);
+    }
+    return ufcRankingsCache.data || [];
+}
+
+// 2. Fetch upcoming UFC Events & Fight Cards
+async function fetchUFCEvents(force = false) {
+    const now = Date.now();
+    if (!force && ufcEventsCache.data && (now - ufcEventsCache.timestamp < 30 * 60 * 1000)) {
+        return ufcEventsCache.data;
+    }
+
+    try {
+        const res = await fetch('https://www.ufc.com/events', {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+            signal: AbortSignal.timeout(12000)
+        });
+        if (!res.ok) throw new Error(`UFC.com status ${res.status}`);
+        const html = await res.text();
+        const articles = html.split('<article class="c-card-event--result');
+        const events = [];
+
+        for (let i = 1; i < articles.length; i++) {
+            const art = articles[i];
+            const headMatch = art.match(/<h3 class="c-card-event--result__headline">[\s\S]*?<a[^>]*href="([^"]+)"[^>]*>([^<]+)<\/a>/);
+            if (!headMatch) continue;
+
+            const link = 'https://www.ufc.com' + headMatch[1];
+            const mainFight = headMatch[2].trim();
+
+            const nameMatch = headMatch[1].match(/\/event\/(ufc-[^/]+)/);
+            const eventCode = nameMatch ? nameMatch[1].replace(/-/g, ' ').toUpperCase() : 'UFC Event';
+
+            const timeMatch = art.match(/data-timestamp="(\d+)"/);
+            const timestamp = timeMatch ? parseInt(timeMatch[1], 10) * 1000 : null;
+            const dateStr = timestamp ? new Date(timestamp).toLocaleDateString('en-US', {
+                weekday: 'short', month: 'short', day: 'numeric', year: 'numeric'
+            }) : 'Upcoming';
+
+            const fights = [...art.matchAll(/data-fight-label="([^"]+)"/g)].map(m => m[1].trim());
+            const uniqueFights = [...new Set(fights)];
+
+            const searchSlug = encodeURIComponent(mainFight.replace(/vs\.?/gi, ' ').trim());
+            const watchUrl = `https://watchmmafull.com/?s=${searchSlug}`;
+
+            events.push({
+                title: `${eventCode}: ${mainFight}`,
+                mainFight,
+                date: dateStr,
+                timestamp,
+                fights: uniqueFights.slice(0, 6),
+                link,
+                watchUrl
+            });
+        }
+
+        if (events.length > 0) {
+            ufcEventsCache = { data: events, timestamp: now };
+            return events;
+        }
+    } catch (e) {
+        console.warn('[UFC Events] Fetch notice:', e.message);
+    }
+    return ufcEventsCache.data || [];
+}
+
+// 3. Fetch Breaking UFC News from ESPN
+async function fetchUFCNews(force = false) {
+    const now = Date.now();
+    if (!force && ufcNewsCache.data && (now - ufcNewsCache.timestamp < 15 * 60 * 1000)) {
+        return ufcNewsCache.data;
+    }
+
+    try {
+        const res = await fetch('https://site.api.espn.com/apis/site/v2/sports/mma/ufc/news', {
+            signal: AbortSignal.timeout(8000)
+        });
+        if (!res.ok) throw new Error(`ESPN news status ${res.status}`);
+        const data = await res.json();
+        const articles = (data.articles || []).slice(0, 8).map(a => ({
+            id: a.id || a.headline,
+            headline: a.headline,
+            description: a.description || 'No description provided.',
+            published: a.published,
+            link: a.links?.web?.href || 'https://www.ufc.com',
+            image: a.images?.[0]?.url || null
+        }));
+
+        if (articles.length > 0) {
+            ufcNewsCache = { data: articles, timestamp: now };
+            return articles;
+        }
+    } catch (e) {
+        console.warn('[UFC News] Fetch notice:', e.message);
+    }
+    return ufcNewsCache.data || [];
+}
+
+// 4. Auto-detect or retrieve configured UFC channel in guild
+function findUFCChannel(guild) {
+    if (!guild || !guild.channels) return null;
+
+    // Check saved channel ID
+    const savedKey = `guild_ufc_settings_${guild.id}`;
+    const saved = levelsCache[savedKey];
+    if (saved && saved.channelId) {
+        const ch = guild.channels.cache.get(saved.channelId);
+        if (ch && ch.isTextBased() && !ch.isVoiceBased()) return ch;
+    }
+
+    // Auto-detect by channel name
+    const detected = guild.channels.cache.find(c =>
+        c.isTextBased() && !c.isVoiceBased() &&
+        /^(ufc|mma|fights|ufc-news|ufc-fights|ufc-chat)$/i.test(c.name)
+    ) || guild.channels.cache.find(c =>
+        c.isTextBased() && !c.isVoiceBased() &&
+        /(ufc|mma)/i.test(c.name)
+    );
+    return detected || null;
+}
+
+function setGuildUFCChannel(guildId, channelId) {
+    const key = `guild_ufc_settings_${guildId}`;
+    levelsCache[key] = { channelId };
+    levelsDirty = true;
+    saveLevels();
+}
+
+// 5. Build Embeds & Buttons for UFC Features
+function buildUFCHubEmbed() {
+    return new EmbedBuilder()
+        .setTitle('🥊 UFC & MMA Central Hub • null')
+        .setDescription(
+            'Welcome to the server UFC fight center! Check upcoming fight cards, official live rankings, breaking MMA news, and full fight replay links.\n\n' +
+            '📺 **Live Stream & Fight Replays:**\n' +
+            '• [Watch on WatchMMAFull.com](https://watchmmafull.com)\n' +
+            '• [Watch on WatchFullMMA.com](https://watchfullmma.com)\n\n' +
+            '👉 *Before and during any fight, click the watch link below to tune in!*'
+        )
+        .setColor(0xD20A0A)
+        .addFields(
+            { name: '📅 Upcoming Fights', value: 'Use `/ufc upcoming` or `.ufc upcoming`', inline: true },
+            { name: '🏆 Official Rankings', value: 'Use `/ufc rankings` or `.ufc rankings`', inline: true },
+            { name: '📰 Breaking News', value: 'Use `/ufc news` or `.ufc news`', inline: true }
+        )
+        .setFooter({ text: 'UFC • MMA Fight Center' })
+        .setTimestamp();
+}
+
+function buildUFCEventsEmbed(events) {
+    const embed = new EmbedBuilder()
+        .setTitle('🥊 UFC Upcoming Fight Cards & Schedule')
+        .setDescription(
+            'Here are the upcoming scheduled UFC events. Before or after each fight, click the links below to stream or watch full fight replays on **WatchMMAFull**!\n\n' +
+            '📺 **Replay & Streaming Sites:** [WatchMMAFull.com](https://watchmmafull.com) • [WatchFullMMA.com](https://watchfullmma.com)\n────────────────────────'
+        )
+        .setColor(0xD20A0A)
+        .setTimestamp();
+
+    if (!events || events.length === 0) {
+        embed.setDescription('No upcoming UFC events found at this moment. Check back soon!');
+        return { embed, components: [] };
+    }
+
+    const firstEvent = events[0];
+    events.slice(0, 5).forEach((ev, idx) => {
+        const fightsList = ev.fights.length > 0 ? `\n*Main Card Fights:* ${ev.fights.join(' • ')}` : '';
+        embed.addFields({
+            name: `${idx === 0 ? '🔥 NEXT EVENT: ' : '📅 '}${ev.title}`,
+            value: `📆 **Date:** \`${ev.date}\`\n🔗 [UFC Event Page](${ev.link}) • [🥊 Watch Replay / Stream](${ev.watchUrl})${fightsList}`,
+            inline: false
+        });
+    });
+
+    const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setLabel(`🥊 Watch ${firstEvent.mainFight}`)
+            .setStyle(ButtonStyle.Link)
+            .setURL(firstEvent.watchUrl),
+        new ButtonBuilder()
+            .setLabel('🌐 WatchMMAFull.com')
+            .setStyle(ButtonStyle.Link)
+            .setURL('https://watchmmafull.com'),
+        new ButtonBuilder()
+            .setLabel('📺 WatchFullMMA.com')
+            .setStyle(ButtonStyle.Link)
+            .setURL('https://watchfullmma.com')
+    );
+
+    return { embed, components: [row] };
+}
+
+function buildUFCRankingsEmbed(divisions, selectedDiv = null) {
+    const embed = new EmbedBuilder()
+        .setTitle('🏆 UFC Official Champions & Divisional Rankings')
+        .setColor(0xD20A0A)
+        .setTimestamp();
+
+    if (!divisions || divisions.length === 0) {
+        embed.setDescription('Unable to fetch UFC rankings at this moment. Please try again shortly!');
+        return embed;
+    }
+
+    if (selectedDiv) {
+        const div = divisions.find(d => d.name.toLowerCase().includes(selectedDiv.toLowerCase()));
+        if (div) {
+            embed.setTitle(`🏆 UFC Rankings: ${div.name}`);
+            embed.setDescription(`👑 **CHAMPION:** **${div.champion}**\n────────────────────────`);
+            if (div.champImage) embed.setThumbnail(div.champImage);
+
+            const fightersText = div.fighters.map(f => `**#${f.rank}** ${f.name}`).join('\n') || 'Rankings updating...';
+            embed.addFields({ name: 'Top Contenders', value: fightersText });
+            return embed;
+        }
+    }
+
+    // Default overview: shows champions across divisions
+    embed.setDescription('Here are the current UFC champions across all weight classes. Use `/ufc rankings <division>` to see the full Top 15!\n────────────────────────');
+    divisions.forEach(d => {
+        const top3 = d.fighters.slice(0, 3).map(f => `#${f.rank} ${f.name}`).join(', ');
+        embed.addFields({
+            name: `${d.name}`,
+            value: `👑 **Champ:** **${d.champion}**\n*Top Contenders:* ${top3 || 'None'}`,
+            inline: true
+        });
+    });
+
+    return embed;
+}
+
+function buildUFCNewsEmbed(articles) {
+    const embed = new EmbedBuilder()
+        .setTitle('📰 UFC & MMA Breaking News')
+        .setDescription('Latest official news, fight announcements, and updates from the UFC world:\n────────────────────────')
+        .setColor(0xD20A0A)
+        .setTimestamp();
+
+    if (!articles || articles.length === 0) {
+        embed.setDescription('No news articles found right now.');
+        return embed;
+    }
+
+    const top = articles[0];
+    if (top.image) embed.setImage(top.image);
+
+    articles.slice(0, 5).forEach(a => {
+        embed.addFields({
+            name: `📌 ${a.headline}`,
+            value: `${a.description.slice(0, 200)}...\n🔗 [Read full article on ESPN](${a.link})`
+        });
+    });
+
+    return embed;
+}
+
+// 6. Automated Scheduled Feed for UFC Channels
+// Checks every 2 hours and automatically posts new breaking news & fight reminders to the #ufc channel!
+async function checkAndPostUFCUpdates() {
+    try {
+        if (!client.guilds || client.guilds.cache.size === 0) return;
+
+        // Fetch fresh news and upcoming events
+        const news = await fetchUFCNews(true);
+        const events = await fetchUFCEvents(true);
+
+        for (const [guildId, guild] of client.guilds.cache) {
+            const ufcChannel = findUFCChannel(guild);
+            if (!ufcChannel) continue;
+
+            // 1. Post new breaking news
+            if (news && news.length > 0) {
+                const latestArticle = news[0];
+                const articleKey = `${guildId}_${latestArticle.id || latestArticle.headline}`;
+                if (!postedUFCArticleIds.has(articleKey)) {
+                    postedUFCArticleIds.add(articleKey);
+
+                    const newsEmbed = new EmbedBuilder()
+                        .setTitle(`📰 UFC BREAKING: ${latestArticle.headline}`)
+                        .setDescription(`${latestArticle.description}\n\n🔗 [Read Full Story on ESPN](${latestArticle.link})\n📺 **Watch Fights:** [WatchMMAFull.com](https://watchmmafull.com) • [WatchFullMMA.com](https://watchfullmma.com)`)
+                        .setColor(0xD20A0A)
+                        .setTimestamp();
+                    if (latestArticle.image) newsEmbed.setImage(latestArticle.image);
+
+                    await ufcChannel.send({ embeds: [newsEmbed] }).catch(() => {});
+                }
+            }
+
+            // 2. Post upcoming event reminder if within 3 days
+            if (events && events.length > 0) {
+                const nextEv = events[0];
+                const evKey = `${guildId}_${nextEv.title}`;
+                if (nextEv.timestamp && (nextEv.timestamp - Date.now() < 3 * 24 * 60 * 60 * 1000) && !postedUFCEventTitles.has(evKey)) {
+                    postedUFCEventTitles.add(evKey);
+
+                    const { embed, components } = buildUFCEventsEmbed([nextEv]);
+                    embed.setTitle(`🥊 UPCOMING FIGHT ALERT: ${nextEv.title}`);
+                    await ufcChannel.send({
+                        content: `📢 **UFC Fight Alert!** The next fight card is coming up soon! Click the button below to watch on **WatchMMAFull**:`,
+                        embeds: [embed],
+                        components
+                    }).catch(() => {});
+                }
+            }
+        }
+    } catch (e) {
+        console.warn('[UFC Scheduler Notice]:', e.message);
+    }
+}
+
+// ==========================================
 // 🎵 MUSIC HELPERS & CONTROLS
 // ==========================================
 
@@ -4000,6 +4375,7 @@ function createHelpEmbed() {
             { name: '🎮 Arcade Minigames', value: '`/hangman [category]` (or `!hangman`) — Interactive Hangman game with real words & ASCII art!\n• Type single letters in chat (e.g. `e`, `a`) or full words to guess!\n• Earn points & XP for finding letters and winning!\n`/hangman-stop` (or `!forfeit`) — Forfeit active game' },
             { name: '🧠 AI Chat & Web Search', value: '• **Mention `@null`** in any channel to chat!\n• **Reply to null\'s messages** to continue the conversation!\n• `/ask <question> [image]` — Ask AI (Groq for text, Gemini Vision for images/GIFs)\n• Remembers **50 messages** of history and knows server members & roles!' },
             { name: '🎨 AI Image Generation', value: '`/imagine <prompt> [ratio] [provider]` (or `.imagine` / `.draw`) — Generate AI pictures!\n• **Mention `@null create an image of...`** or **`@null תצייר לי...`** in chat!\n• Supports **Stability AI (SD 3.5)**, **AI Horde (Free GPU)**, **ClipDrop**, **Hugging Face (FLUX.1)**, & **Picsart**!\n• Interactive `[🔄 Regenerate]` button on every image!' },
+            { name: '🥊 UFC & MMA Fight Center', value: '`/ufc upcoming` (or `.ufc upcoming`) — Upcoming UFC fight cards & dates\n`/ufc rankings [division]` (or `.ufc rankings`) — Real-time UFC champions & contenders\n`/ufc news` (or `.ufc news`) — Latest breaking UFC news from ESPN\n`/ufc watch [fight]` (or `.ufc watch`) — Direct links to stream & replay full fights on **WatchMMAFull.com** & **WatchFullMMA.com**\n`/ufc channel #channel` — Auto-posts news & fight alerts to your `#ufc` channel' },
             { name: '🎶 Music & Lyrics', value: '`/play <song>` — Play songs or playlists (YouTube, Spotify, SoundCloud)\n`/lyrics [song]` (or `!lyrics`) — Live lyrics lookup for currently playing song or search\n`/pause` — Pause music\n`/resume` — Resume music\n`/skip` — Skip to next song\n`/stop` — Stop playback & disconnect' },
             { name: '📜 Queue & Audio', value: '`/nowplaying` — Live song display with progress bar & buttons\n`/queue` — Show upcoming songs\n`/shuffle` — Shuffle the queue\n`/volume <1-100>` — Change playback volume' },
             { name: '⚙️ Utilities', value: '`/null` — Bot status, memory diagnostics & AI brain info\n`/ping` — Check latency\n`/help` (or `!help`) — Display this guide' }
@@ -4735,6 +5111,48 @@ const slashCommands = [
             option.setName('channel')
                 .setDescription('Target text channel for level ups (when mode is Dedicated Text Channel)')
                 .setRequired(false)
+        ),
+    new SlashCommandBuilder()
+        .setName('ufc')
+        .setDescription('🥊 UFC & MMA Hub: Upcoming fight cards, live rankings, breaking news & watch links')
+        .addSubcommand(sub =>
+            sub.setName('hub')
+                .setDescription('Open the UFC Fight Hub with stream and replay links')
+        )
+        .addSubcommand(sub =>
+            sub.setName('upcoming')
+                .setDescription('View upcoming UFC fight cards, event dates, and watch links')
+        )
+        .addSubcommand(sub =>
+            sub.setName('rankings')
+                .setDescription('View official UFC champions and division rankings')
+                .addStringOption(opt =>
+                    opt.setName('division')
+                        .setDescription('Filter by division (e.g. lightweight, heavyweight, p4p)')
+                        .setRequired(false)
+                )
+        )
+        .addSubcommand(sub =>
+            sub.setName('news')
+                .setDescription('View breaking UFC news and announcements from ESPN')
+        )
+        .addSubcommand(sub =>
+            sub.setName('watch')
+                .setDescription('Get direct fight replay and stream links on WatchMMAFull & WatchFullMMA')
+                .addStringOption(opt =>
+                    opt.setName('fight')
+                        .setDescription('Fighter name or event (e.g. Pereira, UFC 313, Jones)')
+                        .setRequired(false)
+                )
+        )
+        .addSubcommand(sub =>
+            sub.setName('channel')
+                .setDescription('Set the text channel for automated UFC fight alerts & news')
+                .addChannelOption(opt =>
+                    opt.setName('target')
+                        .setDescription('Select the text channel to post UFC updates to')
+                        .setRequired(true)
+                )
         )
 ];
 
@@ -4817,6 +5235,15 @@ const onReady = async () => {
     } catch (err) {
         console.warn('⚠️ Voice sync on ready notice:', err.message);
     }
+
+    // Start automated UFC News & Upcoming Fight Card notifications
+    setTimeout(() => {
+        checkAndPostUFCUpdates().catch(e => console.warn('[UFC Init]:', e.message));
+    }, 15000);
+    setInterval(() => {
+        checkAndPostUFCUpdates().catch(e => console.warn('[UFC Interval]:', e.message));
+    }, 2 * 60 * 60 * 1000).unref();
+    console.log('🥊 UFC Fight & News Hub initialized (auto-detects #ufc channels).');
 };
 
 client.once('clientReady', onReady);
@@ -5132,6 +5559,83 @@ client.on('messageCreate', async (message) => {
         if (lower === '!lyrics' || lower.startsWith('!lyrics ')) {
             const query = lower === '!lyrics' ? null : normalized.slice(8).trim();
             return handleLyricsCommand(message, query, false);
+        }
+
+        // UFC & MMA Hub: !ufc, .ufc, !ufc upcoming, !ufc rankings, !ufc news, !ufc watch, !ufc channel
+        if (lower === '!ufc' || lower.startsWith('!ufc ')) {
+            const parts = normalized.split(/\s+/);
+            const sub = (parts[1] || '').toLowerCase();
+            const rest = parts.slice(2).join(' ').trim();
+
+            if (!sub || sub === 'hub') {
+                const embed = buildUFCHubEmbed();
+                const row = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setLabel('🌐 WatchMMAFull.com').setStyle(ButtonStyle.Link).setURL('https://watchmmafull.com'),
+                    new ButtonBuilder().setLabel('📺 WatchFullMMA.com').setStyle(ButtonStyle.Link).setURL('https://watchfullmma.com')
+                );
+                return message.reply({ embeds: [embed], components: [row] }).catch(() => {});
+            }
+
+            if (sub === 'upcoming' || sub === 'events' || sub === 'fights') {
+                await message.channel.sendTyping().catch(() => {});
+                const events = await fetchUFCEvents();
+                const payload = buildUFCEventsEmbed(events);
+                return message.reply({ embeds: [payload.embed], components: payload.components }).catch(() => {});
+            }
+
+            if (sub === 'rankings' || sub === 'ranks' || sub === 'champ' || sub === 'champs') {
+                await message.channel.sendTyping().catch(() => {});
+                const divisions = await fetchUFCRankings();
+                const embed = buildUFCRankingsEmbed(divisions, rest || null);
+                return message.reply({ embeds: [embed] }).catch(() => {});
+            }
+
+            if (sub === 'news') {
+                await message.channel.sendTyping().catch(() => {});
+                const news = await fetchUFCNews();
+                const embed = buildUFCNewsEmbed(news);
+                return message.reply({ embeds: [embed] }).catch(() => {});
+            }
+
+            if (sub === 'watch' || sub === 'stream') {
+                const searchSlug = encodeURIComponent(rest);
+                const watchUrl = rest ? `https://watchmmafull.com/?s=${searchSlug}` : 'https://watchmmafull.com';
+                const embed = new EmbedBuilder()
+                    .setTitle(`🥊 Watch UFC / MMA: ${rest || 'Full Fight Replays'}`)
+                    .setDescription(
+                        `Click the buttons or links below to stream or watch full replays of UFC events on **WatchMMAFull** & **WatchFullMMA**:\n\n` +
+                        `• [Direct Link on WatchMMAFull.com](${watchUrl})\n` +
+                        `• [Browse WatchMMAFull.com](https://watchmmafull.com)\n` +
+                        `• [Browse WatchFullMMA.com](https://watchfullmma.com)`
+                    )
+                    .setColor(0xD20A0A)
+                    .setTimestamp();
+                const row = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setLabel(rest ? `🥊 Watch: ${rest.slice(0, 50)}` : '🥊 WatchMMAFull.com').setStyle(ButtonStyle.Link).setURL(watchUrl),
+                    new ButtonBuilder().setLabel('📺 WatchFullMMA.com').setStyle(ButtonStyle.Link).setURL('https://watchfullmma.com')
+                );
+                return message.reply({ embeds: [embed], components: [row] }).catch(() => {});
+            }
+
+            if (sub === 'channel' || sub === 'setchannel') {
+                const ch = message.mentions.channels.first();
+                if (!ch) {
+                    const currentCh = findUFCChannel(message.guild);
+                    return message.reply(
+                        currentCh
+                            ? `🥊 Current UFC channel: <#${currentCh.id}>. Use \`.ufc channel #channel\` to change it.`
+                            : `🥊 No UFC channel configured yet! Mention a channel with \`.ufc channel #channel\` or create a channel named \`#ufc\`.`
+                    ).catch(() => {});
+                }
+                setGuildUFCChannel(message.guild.id, ch.id);
+                return message.reply(`✅ UFC updates will now be posted to <#${ch.id}>!`).catch(() => {});
+            }
+
+            // Fallback for division directly (e.g. !ufc lightweight or !ufc heavyweight)
+            await message.channel.sendTyping().catch(() => {});
+            const divisions = await fetchUFCRankings();
+            const embed = buildUFCRankingsEmbed(divisions, sub);
+            return message.reply({ embeds: [embed] }).catch(() => {});
         }
 
         // Help command: !help / !commands
@@ -6187,6 +6691,100 @@ client.on('interactionCreate', async (interaction) => {
             content: `✅ Level-up notification mode updated to: **${newMode === 'silent' ? '🔇 Silent in Voice Calls' : newMode === 'channel' ? `📢 Dedicated Channel (<#${newChannelId}>)` : '🔕 Disabled'}**!\nVoice calls will remain peaceful and ping-free. ✨`,
             ephemeral: true
         });
+    }
+
+    // --- /ufc ---
+    if (commandName === 'ufc') {
+        const sub = interaction.options.getSubcommand();
+
+        if (sub === 'hub') {
+            const embed = buildUFCHubEmbed();
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setLabel('🌐 WatchMMAFull.com').setStyle(ButtonStyle.Link).setURL('https://watchmmafull.com'),
+                new ButtonBuilder().setLabel('📺 WatchFullMMA.com').setStyle(ButtonStyle.Link).setURL('https://watchfullmma.com')
+            );
+            return interaction.reply({ embeds: [embed], components: [row] });
+        }
+
+        if (sub === 'upcoming') {
+            await interaction.deferReply();
+            try {
+                const events = await fetchUFCEvents();
+                const payload = buildUFCEventsEmbed(events);
+                return await interaction.editReply({ embeds: [payload.embed], components: payload.components });
+            } catch (err) {
+                return await interaction.editReply({ content: '⚠️ Error fetching UFC events: ' + err.message });
+            }
+        }
+
+        if (sub === 'rankings') {
+            await interaction.deferReply();
+            try {
+                const division = interaction.options.getString('division');
+                const divisions = await fetchUFCRankings();
+                const embed = buildUFCRankingsEmbed(divisions, division);
+                return await interaction.editReply({ embeds: [embed] });
+            } catch (err) {
+                return await interaction.editReply({ content: '⚠️ Error fetching UFC rankings: ' + err.message });
+            }
+        }
+
+        if (sub === 'news') {
+            await interaction.deferReply();
+            try {
+                const news = await fetchUFCNews();
+                const embed = buildUFCNewsEmbed(news);
+                return await interaction.editReply({ embeds: [embed] });
+            } catch (err) {
+                return await interaction.editReply({ content: '⚠️ Error fetching UFC news: ' + err.message });
+            }
+        }
+
+        if (sub === 'watch') {
+            const fight = interaction.options.getString('fight') || '';
+            const searchSlug = encodeURIComponent(fight.trim());
+            const watchUrl = fight ? `https://watchmmafull.com/?s=${searchSlug}` : 'https://watchmmafull.com';
+
+            const embed = new EmbedBuilder()
+                .setTitle(`🥊 Watch UFC / MMA: ${fight || 'Full Fight Replays'}`)
+                .setDescription(
+                    `Click below to stream or watch full replays of UFC events, PPVs, and fight cards on **WatchMMAFull** & **WatchFullMMA**:\n\n` +
+                    `• [Direct Link on WatchMMAFull.com](${watchUrl})\n` +
+                    `• [Browse WatchMMAFull.com](https://watchmmafull.com)\n` +
+                    `• [Browse WatchFullMMA.com](https://watchfullmma.com)`
+                )
+                .setColor(0xD20A0A)
+                .setTimestamp();
+
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setLabel(fight ? `🥊 Watch: ${fight.slice(0, 50)}` : '🥊 WatchMMAFull.com')
+                    .setStyle(ButtonStyle.Link)
+                    .setURL(watchUrl),
+                new ButtonBuilder()
+                    .setLabel('📺 WatchFullMMA.com')
+                    .setStyle(ButtonStyle.Link)
+                    .setURL('https://watchfullmma.com')
+            );
+
+            return interaction.reply({ embeds: [embed], components: [row] });
+        }
+
+        if (sub === 'channel') {
+            if (!interaction.guild) {
+                return interaction.reply({ content: '❌ This command can only be used in a server!', ephemeral: true });
+            }
+
+            const channel = interaction.options.getChannel('target');
+            if (!channel || !channel.isTextBased() || channel.isVoiceBased()) {
+                return interaction.reply({ content: '❌ Please select a valid text channel!', ephemeral: true });
+            }
+
+            setGuildUFCChannel(interaction.guildId, channel.id);
+            return interaction.reply({
+                content: `✅ UFC fight alerts, schedules, and breaking news will now automatically post to <#${channel.id}>! 🥊`
+            });
+        }
     }
 });
 
